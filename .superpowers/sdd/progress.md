@@ -12,3 +12,4 @@ Task 3: complete (commit a875ec0, review clean ✅ — minor: test lacks branch_
 Task 4 fixture: tests/fixtures/bsr_sample.csv (real 2330, 2026-09-03, utf-8-BOM 289KB).
 Task 6 fixtures: 6 verified captcha PNGs (filename=answer).
 PLAN CORRECTIONS (real-site verified 2026-09-03): BSR CSV is utf-8-sig NOT big5; no date/close in CSV (close comes from universe.Stock); 11-col doubled rows idx5 empty; broker cell = cell[:4]+name NO delimiter, case-sensitive (9B2z vs 9B2Z); must follow #HyperLink_DownloadCSV href. Briefs 4/6/7/11 regenerated.
+Task 4: complete (commit b8d0c5d, review ✅ — minors: silent-empty on bad input [handled at client layer], 2-pass csv parse style). _split_broker uses " ".join(cell[4:].split()) — brief reference code had a bug, this is the fix.
