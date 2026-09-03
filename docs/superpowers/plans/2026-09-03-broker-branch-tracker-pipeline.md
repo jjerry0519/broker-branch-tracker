@@ -75,14 +75,16 @@ broker-branch-tracker/
 
 ```
 httpx==0.27.2
-ddddocr==1.5.6
-playwright==1.47.0
+ddddocr==1.6.1
+playwright==1.49.1
 beautifulsoup4==4.12.3
 lxml==5.3.0
 pandas==2.2.3
-pyarrow==17.0.0
+pyarrow==18.1.0
 pytest==8.3.3
 ```
+
+> Versions bumped 2026-09-03 for Python 3.13 wheel availability: `ddddocr` 1.5.6 caps at `<3.13`; `pyarrow` 17 has no cp313 wheel (18+ does); `playwright` 1.47 pulls `greenlet` 3.0.3 which has no cp313 wheel (1.48+ pulls 3.1.x). `duckdb` is used only in tests — add `duckdb==1.1.3` to `requirements.txt` as well (Task 10/11 tests import it).
 
 - [ ] **Step 2: Create `pytest.ini`**
 
