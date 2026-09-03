@@ -1,0 +1,4 @@
+tests/fixtures/** binary
+*.parquet binary
+*.db binary
+*.png binary
