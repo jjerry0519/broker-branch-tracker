@@ -361,108 +361,84 @@ git commit -m "feat: aggregate broker price-level rows into daily branch flows"
 ## Task 4: TWSE BSR CSV 解析
 
 **Files:**
-- Create: `ingest/twse_parse.py`, `tests/test_twse_parse.py`, `tests/fixtures/bsr_sample.csv`
+- Create: `ingest/twse_parse.py`, `tests/test_twse_parse.py`
+- Already committed by coordinator: `tests/fixtures/bsr_sample.csv` (real 2330 capture, 2026-09-03, ~289 KB, UTF-8-BOM)
 
 **Interfaces:**
 - Consumes: `RawRow` from `ingest.aggregate`
 - Produces:
-  - `@dataclass(frozen=True, slots=True) class BsrPage`:
-    `stock_id: str`, `trade_date: str` (YYYY-MM-DD, converted from ROC), `close_price: float`, `rows: list[RawRow]`
+  - `@dataclass(frozen=True, slots=True) class BsrPage`: `stock_id: str`, `rows: list[RawRow]`
+    (the BSR CSV contains **no date and no close price** — those are supplied by the caller from `universe.Stock` in Task 11)
   - `parse_bsr_csv(text: str) -> BsrPage`
-  - `roc_to_iso(roc: str) -> str` — `"115/09/02"` or `"115年09月02日"` → `"2026-09-02"`
 
-**Notes on BSR CSV format (observed 2026-09):**
-- BIG5-decoded text. Header lines look like `證券代號,2330 台積電` / `資料日期,115/09/02` / `收盤價,1085.00` (comma-separated key,value; label wording may vary — match by keyword).
-- After a blank line, a header row: `序號,券商,價格,買進股數,賣出股數,序號,券商,價格,買進股數,賣出股數` (columns doubled).
-- Data rows carry two records each (left half cols 0–4, right half cols 5–9); a half may be empty (trailing rows).
-- `券商` cell = `"1020 合庫"` → split on first whitespace run: id `"1020"`, name `"合庫"`.
-- Share cells may contain thousands separators (`"1,006"`).
+**REAL BSR CSV format (verified against `tests/fixtures/bsr_sample.csv`, captured 2026-09-03):**
+- **Encoding: UTF-8 with BOM.** Decode with `.decode("utf-8-sig")`. (NOT BIG5 — the old plan text was wrong.)
+- Line 0: `券商買賣股票成交價量資訊`
+- Line 1: `股票代碼,="2330"` — the stock id is inside `="..."` (Excel text-guard). Extract digits/alnum from `cells[1]`.
+- Line 2 (column header): `序號,券商,價格,買進股數,賣出股數,,序號,券商,價格,買進股數,賣出股數`
+  — **11 fields**: left record = indices 0–4, index 5 is an **empty separator**, right record = indices 6–10.
+- Line 3+ (data), all values double-quoted, **often a trailing space** inside the last quote:
+  `"1","1020合　　庫","2385.00","642","0",,"2","1020合　　庫","2390.00","8285","401" `
+  - `序號` = index 0 / 6 (ignored)
+  - `券商` cell (index 1 / 7) = **`<first 4 chars> + <name>` with NO delimiter**, e.g. `1020合　　庫`.
+    - `branch_id = cell[:4]` — **case-sensitive**, may contain letters: real data has both `9B2z台新文心` and `9B2Z台新安南` as distinct branches.
+    - `branch_name = cell[4:]` then `.replace("　", " ").strip()` (names pad with full-width spaces `　`).
+  - `價格` = index 2 / 8 (ignored)
+  - `買進股數` = index 3 / 9 ; `賣出股數` = index 4 / 10 — quoted ints, may carry a trailing space; a few carry a thousands `,` separator historically → strip `,` and whitespace before `int()`.
+- The real fixture has 3029 lines, ~6052 price-level records, **816 distinct branches** for 2330.
 
-- [ ] **Step 1: Capture a real fixture**
-
-Run this once (needs network; not committed as a test):
-
-```python
-# scratch, run manually with .venv python
-import httpx, re
-from bs4 import BeautifulSoup
-s = httpx.Client(timeout=30, headers={"User-Agent": "broker-branch-tracker/1.0 (+personal research)"})
-m = s.get("https://bsr.twse.com.tw/bshtm/bsMenu.aspx")
-soup = BeautifulSoup(m.text, "lxml")
-form = {i["name"]: i.get("value", "") for i in soup.select("form input[name]")}
-guid = re.search(r"guid=([0-9a-f-]+)", soup.select_one("#Panel_bshtm img")["src"]).group(1)
-img = s.get(f"https://bsr.twse.com.tw/bshtm/CaptchaImage.aspx?guid={guid}")
-open("captcha.png", "wb").write(img.content)
-code = input("captcha: ").strip()          # eyeball captcha.png
-form.update({"__EVENTTARGET": "", "__EVENTARGUMENT": "",
-             "RadioButton_Normal": "RadioButton_Normal",
-             "TextBox_Stkno": "2330", "CaptchaControl1": code, "btnOK": "查詢"})
-form.pop("RadioButton_Excd", None); form.pop("Button_Reset", None)
-s.post("https://bsr.twse.com.tw/bshtm/bsMenu.aspx", data=form)
-csv = s.get("https://bsr.twse.com.tw/bshtm/bsContent.aspx")
-open("tests/fixtures/bsr_sample.csv", "wb").write(csv.content)   # keep raw BIG5 bytes
-```
-
-Commit `tests/fixtures/bsr_sample.csv` (raw BIG5 bytes).
-
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/test_twse_parse.py
 from pathlib import Path
 
-import pytest
-
-from ingest.twse_parse import BsrPage, parse_bsr_csv, roc_to_iso
+from ingest.twse_parse import BsrPage, parse_bsr_csv
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bsr_sample.csv"
 
 
-@pytest.mark.parametrize("roc,iso", [
-    ("115/09/02", "2026-09-02"),
-    ("115年09月02日", "2026-09-02"),
-    ("114/1/5", "2025-01-05"),
-])
-def test_roc_to_iso(roc, iso):
-    assert roc_to_iso(roc) == iso
-
-
 def test_parse_bsr_sample():
-    text = FIXTURE.read_bytes().decode("big5", errors="replace")
+    text = FIXTURE.read_bytes().decode("utf-8-sig", errors="replace")
     page = parse_bsr_csv(text)
     assert isinstance(page, BsrPage)
     assert page.stock_id == "2330"
-    assert page.trade_date.count("-") == 2 and len(page.trade_date) == 10
-    assert page.close_price > 0
-    assert len(page.rows) > 50                      # 2330 has many branches
+    assert len(page.rows) > 5000                       # ~6052 price-level records
     r = page.rows[0]
-    assert r.branch_id.isascii() and r.branch_id.strip() == r.branch_id
-    assert r.branch_name != ""
-    assert r.buy_shares >= 0 and r.sell_shares >= 0
-    # doubled-column parsing: total rows should be even-ish and both halves used
-    assert sum(x.buy_shares + x.sell_shares for x in page.rows) > 0
+    assert r.branch_id == "1020"                       # first data row
+    assert r.branch_name.replace(" ", "") == "合庫"    # full-width spaces collapsed
+    assert r.buy_shares == 642 and r.sell_shares == 0
+    # right-half record on the same line is parsed too
+    assert page.rows[1].branch_id == "1020" and page.rows[1].buy_shares == 8285
+    # case-sensitive branch ids: both 9B2z and 9B2Z appear
+    ids = {x.branch_id for x in page.rows}
+    assert "9B2z" in ids and "9B2Z" in ids
+    assert all(x.buy_shares >= 0 and x.sell_shares >= 0 for x in page.rows)
 
 
-def test_parse_bsr_handles_thousands_separator():
+def test_parse_bsr_synthetic_shape():
     text = (
-        "證券代號,9999 測試\n資料日期,115/09/02\n收盤價,10.00\n\n"
-        "序號,券商,價格,買進股數,賣出股數,序號,券商,價格,買進股數,賣出股數\n"
-        "1,1020 合庫,10.00,\"1,006\",0,2,1440 美林,10.00,0,\"2,500\"\n"
+        '券商買賣股票成交價量資訊\n'
+        '股票代碼,="9999"\n'
+        '序號,券商,價格,買進股數,賣出股數,,序號,券商,價格,買進股數,賣出股數\n'
+        '"1","1020合　　庫","10.00","1006","0",,"2","1440美林","10.00","0","2500" \n'
+        '"3","1020合　　庫","11.00","4","0",,"",,,,\n'
     )
     page = parse_bsr_csv(text)
     assert page.stock_id == "9999"
-    assert page.close_price == 10.0
-    ids = {r.branch_id: (r.buy_shares, r.sell_shares) for r in page.rows}
-    assert ids["1020"] == (1006, 0)
-    assert ids["1440"] == (0, 2500)
+    recs = [(r.branch_id, r.buy_shares, r.sell_shares) for r in page.rows]
+    assert ("1020", 1006, 0) in recs
+    assert ("1020", 4, 0) in recs
+    assert ("1440", 0, 2500) in recs
+    assert page.rows[0].branch_name == "合 庫"        # 　 -> space, stripped
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_twse_parse.py -v`
+Run: `.venv/Scripts/python.exe -m pytest tests/test_twse_parse.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ingest.twse_parse'`
 
-- [ ] **Step 4: Write minimal implementation**
+- [ ] **Step 3: Write minimal implementation**
 
 ```python
 # ingest/twse_parse.py
@@ -475,85 +451,65 @@ from dataclasses import dataclass
 
 from ingest.aggregate import RawRow
 
-_DIGITS = re.compile(r"-?\d[\d,]*")
-_WS = re.compile(r"\s+")
-
 
 @dataclass(frozen=True, slots=True)
 class BsrPage:
     stock_id: str
-    trade_date: str
-    close_price: float
     rows: list[RawRow]
-
-
-def roc_to_iso(roc: str) -> str:
-    nums = re.findall(r"\d+", roc)
-    if len(nums) != 3:
-        raise ValueError(f"unrecognised ROC date: {roc!r}")
-    y, m, d = (int(n) for n in nums)
-    return f"{y + 1911:04d}-{m:02d}-{d:02d}"
 
 
 def _int(cell: str) -> int:
     cell = (cell or "").strip().replace(",", "")
-    return int(cell) if cell and cell.lstrip("-").isdigit() else 0
-
-
-def _num(cell: str) -> float:
-    m = _DIGITS.search(cell or "")
-    return float(m.group(0).replace(",", "")) if m else 0.0
+    return int(cell) if cell.lstrip("-").isdigit() else 0
 
 
 def _split_broker(cell: str) -> tuple[str, str]:
     cell = (cell or "").strip()
-    if not cell:
+    if len(cell) < 4:
         return "", ""
-    parts = _WS.split(cell, maxsplit=1)
-    return parts[0], (parts[1] if len(parts) > 1 else "")
+    bid = cell[:4]
+    name = cell[4:].replace("　", " ").strip()
+    return bid, name
 
 
 def parse_bsr_csv(text: str) -> BsrPage:
     lines = text.splitlines()
-    stock_id = trade_date = ""
-    close_price = 0.0
-    body_start = 0
+    stock_id = ""
+    body_start = len(lines)
     for i, line in enumerate(lines):
-        cells = next(csvmod.reader([line])) if line.strip() else []
+        if not line.strip():
+            continue
+        cells = next(csvmod.reader([line]))
         joined = "".join(cells)
-        if "證券代號" in joined and len(cells) >= 2:
-            stock_id = cells[1].strip().split()[0]
-        elif ("資料日期" in joined or "交易日期" in joined) and len(cells) >= 2:
-            trade_date = roc_to_iso(cells[1])
-        elif "收盤價" in joined and len(cells) >= 2:
-            close_price = _num(cells[1])
-        elif cells[:2] == ["序號", "券商"] or (cells and cells[0] == "序號"):
+        if "股票代碼" in joined and len(cells) >= 2:
+            m = re.search(r"[0-9A-Za-z]{3,}", cells[1])
+            stock_id = m.group(0) if m else cells[1].strip()
+        elif cells and cells[0] == "序號":
             body_start = i + 1
             break
 
     rows: list[RawRow] = []
-    reader = csvmod.reader(io.StringIO("\n".join(lines[body_start:])))
-    for cells in reader:
-        for half in (cells[0:5], cells[5:10]):
+    for cells in csvmod.reader(io.StringIO("\n".join(lines[body_start:]))):
+        for half in (cells[0:5], cells[6:11]):
             if len(half) < 5:
                 continue
             bid, bname = _split_broker(half[1])
             if not bid:
                 continue
             rows.append(RawRow(bid, bname, _int(half[3]), _int(half[4])))
-    return BsrPage(stock_id, trade_date, close_price, rows)
+    return BsrPage(stock_id, rows)
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_twse_parse.py -v`
-Expected: PASS (5 tests). If the live fixture's label wording differs, adjust the keyword matches in `parse_bsr_csv` and note the real wording in a code comment.
+Run: `.venv/Scripts/python.exe -m pytest tests/test_twse_parse.py -v`
+Expected: PASS (2 tests). If an assertion about the exact first-row values fails, open `tests/fixtures/bsr_sample.csv` (utf-8-sig) and adjust the expected numbers to the fixture's real first data row — do not loosen the structural assertions (row count > 5000, case-sensitive ids, both halves parsed).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add ingest/twse_parse.py tests/test_twse_parse.py tests/fixtures/bsr_sample.csv
-git commit -m "feat: parse TWSE BSR CSV into BsrPage"
+git add ingest/twse_parse.py tests/test_twse_parse.py
+git commit -m "feat: parse TWSE BSR CSV (utf-8-sig, doubled 11-col rows) into BsrPage"
 ```
 
 ---
@@ -770,7 +726,8 @@ git commit -m "feat: parse TPEx brokerBS JSON into BrokerBsPage"
 ## Task 6: 驗證碼辨識
 
 **Files:**
-- Create: `ingest/captcha.py`, `tests/test_captcha.py`, `tests/fixtures/captcha_samples/` (a few PNGs named `<answer>.png`)
+- Create: `ingest/captcha.py`, `tests/test_captcha.py`
+- Already committed by coordinator: `tests/fixtures/captcha_samples/*.png` — 6 real BSR captcha images, each **filename = the verified-correct answer** (verified by a successful live BSR query at capture time).
 
 **Interfaces:**
 - Consumes: nothing
@@ -778,11 +735,7 @@ git commit -m "feat: parse TPEx brokerBS JSON into BrokerBsPage"
   - `looks_valid(text: str) -> bool` — exactly 5 chars, all `[A-Za-z0-9]`
   - `solve(png_bytes: bytes) -> str` — uppercased alnum guess via `ddddocr` (lazy-init a module-level `ddddocr.DdddOcr(show_ad=False)`)
 
-- [ ] **Step 1: Capture 5 sample captchas**
-
-Manually save 5 CaptchaImage PNGs (from Task 4 Step 1's `captcha.png`), naming each by the characters you read, e.g. `tests/fixtures/captcha_samples/A3K7P.png`. Commit them.
-
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/test_captcha.py
@@ -803,15 +756,23 @@ def test_looks_valid(text, ok):
     assert looks_valid(text) is ok
 
 
-def test_solve_hits_majority_of_samples():
+def test_solve_returns_5_alnum_for_every_sample():
     assert SAMPLES, "no captcha fixtures committed"
-    hits = sum(1 for p in SAMPLES if solve(p.read_bytes()).upper() == p.stem.upper())
-    assert hits >= len(SAMPLES) * 0.5   # ddddocr first-try >=50%; retry loop covers the rest
+    for p in SAMPLES:
+        out = solve(p.read_bytes())
+        assert looks_valid(out), f"{p.name}: solve returned {out!r}"
+
+
+def test_solve_matches_known_answers_on_majority():
+    # filenames are verified-correct labels; the model is deterministic, so this
+    # should be near-100%. Threshold has margin for ddddocr version drift.
+    hits = sum(1 for p in SAMPLES if solve(p.read_bytes()) == p.stem.upper())
+    assert hits >= len(SAMPLES) * 0.6
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_captcha.py -v`
+Run: `.venv/Scripts/python.exe -m pytest tests/test_captcha.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ingest.captcha'`
 
 - [ ] **Step 4: Write minimal implementation**
@@ -839,15 +800,15 @@ def solve(png_bytes: bytes) -> str:
     return re.sub(r"[^A-Za-z0-9]", "", raw).upper()
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_captcha.py -v`
-Expected: PASS (8 tests). If `test_solve_hits_majority_of_samples` fails badly, lower threshold to `0.35` and rely more on the retry loop — but first re-check the sample filenames match what the images actually show.
+Run: `.venv/Scripts/python.exe -m pytest tests/test_captcha.py -v`
+Expected: PASS (9 tests: 7 `looks_valid` params + 2 solve tests). The `ddddocr` model download (first run) may add a few seconds.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add ingest/captcha.py tests/test_captcha.py tests/fixtures/captcha_samples/
+git add ingest/captcha.py tests/test_captcha.py
 git commit -m "feat: captcha solver via ddddocr + validity check"
 ```
 
@@ -863,9 +824,17 @@ git commit -m "feat: captcha solver via ddddocr + validity check"
 - Produces:
   - `class BsrError(RuntimeError)`
   - `fetch_stock(client: httpx.Client, stock_id: str, *, max_attempts: int = 5) -> BsrPage`
-    — one GET form → solve captcha → POST → GET `bsContent.aspx`; retries captcha up to `max_attempts`;
-    raises `BsrError` if all attempts fail or the stock has no report.
+    — one GET `bsMenu.aspx` → solve captcha → POST `bsMenu.aspx` → read the `href` of
+    `<a id="HyperLink_DownloadCSV">` from the POST response → GET that href → decode
+    **`utf-8-sig`** → `parse_bsr_csv`. Retries captcha up to `max_attempts`; raises `BsrError`
+    if every attempt fails (POST response has no `#HyperLink_DownloadCSV` = captcha rejected
+    or stock has no report).
   - `new_client() -> httpx.Client` — preconfigured (base cookies jar, UA, `timeout=30`, `follow_redirects=True`)
+
+**Verified flow facts (2026-09-03):**
+- Wrong captcha → POST response HTML has an error label (`驗證碼錯誤`) and **no** `#HyperLink_DownloadCSV`.
+- Right captcha → POST response HTML contains `<a id="HyperLink_DownloadCSV" href="bsContent.aspx?StkNo=<id>&RecCount=<n>">`. The `href` **must** be used verbatim; a bare GET of `bsContent.aspx` returns a stale/blank page.
+- The downloaded CSV is **UTF-8 with BOM** (`.decode("utf-8-sig")`), NOT BIG5.
 
 - [ ] **Step 1: Write the failing test (unit — mock transport)**
 
@@ -886,38 +855,53 @@ MENU_HTML = """<html><body><form>
 <div id="Panel_bshtm"><img src="CaptchaImage.aspx?guid=abc-123"/></div>
 </form></body></html>"""
 
-CSV_OK = ("證券代號,2330 台積電\n資料日期,115/09/02\n收盤價,1085.00\n\n"
-          "序號,券商,價格,買進股數,賣出股數,序號,券商,價格,買進股數,賣出股數\n"
-          "1,9200 凱基台北,1085,1000,0,2,1440 美林,1085,0,500\n")
+# POST response when the captcha is accepted: carries the download link
+POST_OK = ('<html><body><form>'
+           '<a id="HyperLink_DownloadCSV" href="bsContent.aspx?StkNo=2330&RecCount=2">下載</a>'
+           '</form></body></html>')
+# POST response when the captcha is rejected: no download link, error label present
+POST_BAD = '<html><body><span id="Label_ErrorMsg">驗證碼錯誤!</span></body></html>'
+
+# real BSR CSV shape: utf-8, 11 cols, index 5 empty, broker = <4 chars><name>
+CSV_OK = (
+    '券商買賣股票成交價量資訊\r\n'
+    '股票代碼,="2330"\r\n'
+    '序號,券商,價格,買進股數,賣出股數,,序號,券商,價格,買進股數,賣出股數\r\n'
+    '"1","9200凱基台北","1085.00","1000","0",,"2","1440美　　林","1085.00","0","500" \r\n'
+).encode("utf-8-sig")
 
 
-def _handler(request: httpx.Request) -> httpx.Response:
-    if request.url.path.endswith("bsMenu.aspx") and request.method == "GET":
-        return httpx.Response(200, text=MENU_HTML)
-    if "CaptchaImage" in request.url.path:
-        return httpx.Response(200, content=b"\x89PNG_fake")
-    if request.url.path.endswith("bsMenu.aspx") and request.method == "POST":
-        return httpx.Response(200, text="ok")
-    if request.url.path.endswith("bsContent.aspx"):
-        return httpx.Response(200, content=CSV_OK.encode("big5"))
-    return httpx.Response(404)
+def _make_handler(*, good_captcha: bool):
+    def handler(request: httpx.Request) -> httpx.Response:
+        p, m = request.url.path, request.method
+        if p.endswith("bsMenu.aspx") and m == "GET":
+            return httpx.Response(200, text=MENU_HTML)
+        if "CaptchaImage" in p:
+            return httpx.Response(200, content=b"\x89PNG_fake")
+        if p.endswith("bsMenu.aspx") and m == "POST":
+            return httpx.Response(200, text=POST_OK if good_captcha else POST_BAD)
+        if p.endswith("bsContent.aspx"):
+            return httpx.Response(200, content=CSV_OK)
+        return httpx.Response(404)
+    return handler
 
 
 def test_fetch_stock_happy_path(monkeypatch):
     monkeypatch.setattr(twse_client, "solve", lambda b: "ABC12")
     monkeypatch.setattr(twse_client, "looks_valid", lambda s: True)
-    client = httpx.Client(transport=httpx.MockTransport(_handler),
+    client = httpx.Client(transport=httpx.MockTransport(_make_handler(good_captcha=True)),
                           base_url="https://bsr.twse.com.tw")
     page = twse_client.fetch_stock(client, "2330")
     assert isinstance(page, BsrPage)
     assert page.stock_id == "2330"
     assert {r.branch_id for r in page.rows} == {"9200", "1440"}
+    assert next(r for r in page.rows if r.branch_id == "1440").sell_shares == 500
 
 
 def test_fetch_stock_retries_then_fails(monkeypatch):
-    monkeypatch.setattr(twse_client, "solve", lambda b: "")
-    monkeypatch.setattr(twse_client, "looks_valid", lambda s: False)
-    client = httpx.Client(transport=httpx.MockTransport(_handler),
+    monkeypatch.setattr(twse_client, "solve", lambda b: "ZZZZZ")
+    monkeypatch.setattr(twse_client, "looks_valid", lambda s: True)
+    client = httpx.Client(transport=httpx.MockTransport(_make_handler(good_captcha=False)),
                           base_url="https://bsr.twse.com.tw")
     with pytest.raises(twse_client.BsrError):
         twse_client.fetch_stock(client, "2330", max_attempts=3)
@@ -925,7 +909,7 @@ def test_fetch_stock_retries_then_fails(monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_twse_client.py -v`
+Run: `.venv/Scripts/python.exe -m pytest tests/test_twse_client.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ingest.twse_client'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -959,13 +943,12 @@ def new_client() -> httpx.Client:
 def fetch_stock(client: httpx.Client, stock_id: str, *, max_attempts: int = 5) -> BsrPage:
     last = ""
     for _ in range(max_attempts):
-        menu = client.get("bsMenu.aspx")
-        soup = BeautifulSoup(menu.text, "lxml")
+        soup = BeautifulSoup(client.get("bsMenu.aspx").text, "lxml")
         form = {i["name"]: i.get("value", "")
                 for i in soup.select("form input[name]")}
         for junk in ("RadioButton_Excd", "Button_Reset"):
             form.pop(junk, None)
-        img = soup.select_one("#Panel_bshtm img")
+        img = soup.select_one("#Panel_bshtm img") or soup.select_one("img[src*=CaptchaImage]")
         if not img:
             raise BsrError(f"{stock_id}: no captcha panel")
         guid = _GUID.search(img["src"]).group(1)
@@ -977,13 +960,14 @@ def fetch_stock(client: httpx.Client, stock_id: str, *, max_attempts: int = 5) -
                      "RadioButton_Normal": "RadioButton_Normal",
                      "TextBox_Stkno": stock_id, "CaptchaControl1": code,
                      "btnOK": "查詢"})
-        client.post("bsMenu.aspx", data=form)
-        csv_resp = client.get("bsContent.aspx")
-        text = csv_resp.content.decode("big5", errors="replace")
-        if "序號" not in text:
-            last = "no report body"
+        post = client.post("bsMenu.aspx", data=form)
+        link = BeautifulSoup(post.text, "lxml").select_one("#HyperLink_DownloadCSV")
+        href = link.get("href") if link else None
+        if not href:
+            last = "captcha rejected / no report"
             continue
-        page = parse_bsr_csv(text)
+        raw = client.get(href).content
+        page = parse_bsr_csv(raw.decode("utf-8-sig", errors="replace"))
         if page.rows:
             return page
         last = "empty rows"
@@ -992,7 +976,7 @@ def fetch_stock(client: httpx.Client, stock_id: str, *, max_attempts: int = 5) -
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_twse_client.py -v`
+Run: `.venv/Scripts/python.exe -m pytest tests/test_twse_client.py -v`
 Expected: PASS (2 tests)
 
 - [ ] **Step 5: Add a manual integration test**
@@ -1003,18 +987,20 @@ Expected: PASS (2 tests)
 def test_fetch_stock_live_2330():
     from ingest.twse_client import new_client
     with new_client() as c:
-        page = twse_client.fetch_stock(c, "2330")
-    assert page.stock_id == "2330" and len(page.rows) > 50 and page.close_price > 0
+        page = twse_client.fetch_stock(c, "2330", max_attempts=30)
+    assert page.stock_id == "2330"
+    assert len(page.rows) > 500
+    assert all(r.branch_id and r.buy_shares >= 0 and r.sell_shares >= 0 for r in page.rows)
 ```
 
-Run manually: `python -m pytest tests/test_twse_client.py -m integration -v`
-Expected: PASS (may take 5–20s; retries captcha).
+Run manually: `.venv/Scripts/python.exe -m pytest tests/test_twse_client.py -m integration -v`
+Expected: PASS (may take 30–120s — ddddocr first-try captcha accuracy on this 5-char captcha is roughly 1-in-5, so `max_attempts=30` is deliberate; the daily pipeline uses the same loop).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add ingest/twse_client.py tests/test_twse_client.py
-git commit -m "feat: TWSE BSR client with captcha retry loop"
+git commit -m "feat: TWSE BSR client — captcha retry, download-link follow, utf-8-sig"
 ```
 
 ---
@@ -1620,10 +1606,10 @@ def fetch_market(stocks: list[Stock],
 
 def _twse_one(client, date_iso):
     def inner(s: Stock) -> list[BranchFlow]:
-        page = twse_fetch(client, s.stock_id)
-        close = page.close_price or s.close_price
-        return aggregate([_raw(r) for r in page.rows], date=date_iso, market="twse",
-                         stock_id=s.stock_id, close_price=close)
+        page = twse_fetch(client, s.stock_id, max_attempts=30)
+        # BsrPage has no close price / date -> always from universe.Stock
+        return aggregate(page.rows, date=date_iso, market="twse",
+                         stock_id=s.stock_id, close_price=s.close_price)
     return inner
 
 
@@ -1632,20 +1618,15 @@ def _tpex_one(client, sess: TpexSession, date_iso):
         for _ in range(2):
             try:
                 page = tpex_fetch(client, sess, s.stock_id)
-                close = page.close_price or s.close_price
-                return aggregate([_raw(r) for r in page.rows], date=date_iso,
-                                 market="tpex", stock_id=s.stock_id, close_price=close)
+                close = page.close_price or s.close_price   # brokerBS carries close; fall back
+                return aggregate(page.rows, date=date_iso, market="tpex",
+                                 stock_id=s.stock_id, close_price=close)
             except TpexRetry:
                 sess2 = mint_session()
                 sess.cookies, sess.user_agent = sess2.cookies, sess2.user_agent
                 client.cookies.update(sess.cookies)
         raise RuntimeError(f"{s.stock_id}: tpex retry exhausted")
     return inner
-
-
-def _raw(r):
-    from ingest.aggregate import RawRow
-    return RawRow(r.branch_id, r.branch_name, r.buy_shares, r.sell_shares)
 
 
 def _append_log(rec: dict) -> None:
