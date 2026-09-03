@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+/tmp_*/
+*.parquet
+!tests/fixtures/*.parquet
+.env
