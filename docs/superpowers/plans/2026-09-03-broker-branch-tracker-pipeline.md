@@ -517,47 +517,40 @@ git commit -m "feat: parse TWSE BSR CSV (utf-8-sig, doubled 11-col rows) into Bs
 ## Task 5: TPEx brokerBS JSON 解析
 
 **Files:**
-- Create: `ingest/tpex_parse.py`, `tests/test_tpex_parse.py`, `tests/fixtures/tpex_sample.json`
+- Create: `ingest/tpex_parse.py`, `tests/test_tpex_parse.py`
+- Already committed by coordinator: `tests/fixtures/tpex_sample.json` (real 6488 brokerBS response, 2026-09-03)
 
 **Interfaces:**
 - Consumes: `RawRow` from `ingest.aggregate`
 - Produces:
+  - `class TpexRetry(RuntimeError)`
   - `@dataclass(frozen=True, slots=True) class BrokerBsPage`:
-    `stock_id: str`, `trade_date: str` (ISO), `close_price: float`, `rows: list[RawRow]`
+    `stock_id: str`, `trade_date: str` (ISO `YYYY-MM-DD`), `close_price: float`, `rows: list[RawRow]`
   - `parse_brokerbs(payload: dict) -> BrokerBsPage`
 
-**Notes on brokerBS response (observed 2026-09):**
-- `POST https://www.tpex.org.tw/www/zh-tw/afterTrading/brokerBS`, body `code=<id>&id=&response=json`.
-- On failure the JSON is `{"stat": "操作逾時..."}` — raise `TpexRetry` so the client re-mints the cookie.
-- On success: a `tables`-style structure with a header block (交易日期 / 證券代號 / 收盤價) and a data block with columns `序號, 券商, 價格, 買進股數, 賣出股數` (single set, not doubled). Exact key names to be confirmed from the captured fixture; parser must locate the data rows by matching the column header, not by a hard-coded key path.
-
-- [ ] **Step 1: Capture a real fixture**
-
-Run manually (Playwright must be installed: `.venv/Scripts/playwright install chromium`):
-
-```python
-# scratch, run manually
-import json
-from playwright.sync_api import sync_playwright
-with sync_playwright() as p:
-    b = p.chromium.launch()
-    pg = b.new_page()
-    pg.goto("https://www.tpex.org.tw/zh-tw/mainboard/trading/info/brokerBS.html")
-    pg.wait_for_function("document.querySelector('[name=cf-turnstile-response]')?.value.length > 100", timeout=30000)
-    payload = pg.evaluate("""async () => {
-        const r = await fetch('https://www.tpex.org.tw/www/zh-tw/afterTrading/brokerBS', {
-          method:'POST',
-          headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
-          body: new URLSearchParams({code:'6488', id:'', response:'json'})});
-        return await r.json();
-    }""")
-    open("tests/fixtures/tpex_sample.json", "w", encoding="utf-8").write(json.dumps(payload, ensure_ascii=False, indent=2))
-    b.close()
+**REAL brokerBS response shape (verified against `tests/fixtures/tpex_sample.json`, 2026-09-03):**
+```json
+{
+  "stat": "ok",
+  "tables": [
+    { "fields": ["交易日期","證券代號","成交筆數","成交金額","成交股數","週轉率(%)","開盤價","最高價","最低價","收盤價"],
+      "data": [["115年9月3日", "6488 環球晶", "26541", "7,375,708,011", "7,779,649", "2", "970.00", "974.00", "920.00", "927.00"]] },
+    { "fields": ["序號","券商","價格","買進股數","賣出股數"],
+      "title": "券商買賣日報表（一般交易）", "totalCount": 13483,
+      "data": [ [1, "1020 合庫", "925", "5", "0"], [2, "1020 合庫", "927", "0", "1000"], ...
+                [13483, "9B2z 台新文心", "968", "0", "1000"] ] }
+  ]
+}
 ```
+- On timeout: `{"stat": "操作逾時，請重新整理頁面後再試，謝謝。"}` (no `tables`) → raise `TpexRetry`.
+- Also treat any `stat` other than `"ok"` as `TpexRetry` (defensive).
+- **Summary table** = the one whose `fields` contains `"收盤價"`. Row `data[0]`: `證券代號` cell is `"6488 環球晶"` → id = first token; `收盤價` cell = `"927.00"`; `交易日期` cell = `"115年9月3日"` → ROC → `2026-09-03`.
+- **Detail table** = the one whose `fields` == `["序號","券商","價格","買進股數","賣出股數"]`. Each row: `[序號(int), "1020 合庫", 價格, 買進股數, 賣出股數]`.
+  - `券商` cell **has a space** (unlike TWSE): `"1020 合庫"` → `cell.split(None, 1)` → id `"1020"`, name `"合庫"`. Case-sensitive (`9B2z`).
+  - share cells are quoted strings, sometimes with thousands `,`.
+- 6488 had 13483 detail rows.
 
-Inspect the file, then commit it.
-
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/test_tpex_parse.py
@@ -576,27 +569,31 @@ def test_parse_tpex_sample():
     page = parse_brokerbs(payload)
     assert isinstance(page, BrokerBsPage)
     assert page.stock_id == "6488"
-    assert len(page.trade_date) == 10 and page.trade_date.count("-") == 2
-    assert page.close_price > 0
-    assert len(page.rows) > 20
-    r = page.rows[0]
-    assert r.branch_id and r.branch_name
-    assert r.buy_shares >= 0 and r.sell_shares >= 0
+    assert page.trade_date == "2026-09-03"
+    assert page.close_price == 927.0
+    assert len(page.rows) > 5000                       # ~13483 detail rows
+    assert page.rows[0].branch_id == "1020"
+    assert page.rows[0].branch_name == "合庫"
+    assert (page.rows[0].buy_shares, page.rows[0].sell_shares) == (5, 0)
+    assert page.rows[1].branch_id == "1020" and page.rows[1].sell_shares == 1000
+    assert all(r.buy_shares >= 0 and r.sell_shares >= 0 for r in page.rows)
 
 
-def test_parse_tpex_timeout_raises_retry():
+@pytest.mark.parametrize("payload", [
+    {"stat": "操作逾時，請重新整理頁面後再試，謝謝。"},
+    {"stat": "查詢失敗"},
+])
+def test_parse_tpex_non_ok_stat_raises_retry(payload):
     with pytest.raises(TpexRetry):
-        parse_brokerbs({"stat": "操作逾時，請重新整理頁面後再試，謝謝。"})
+        parse_brokerbs(payload)
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_tpex_parse.py -v`
+Run: `.venv/Scripts/python.exe -m pytest tests/test_tpex_parse.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ingest.tpex_parse'`
 
-- [ ] **Step 4: Write minimal implementation**
-
-Adjust the header/data extraction to the captured fixture's actual shape; the code below assumes the common TPEx `{"tables":[{"data":[...], "fields":[...]}], ...}` form plus scattered header keys.
+- [ ] **Step 3: Write minimal implementation**
 
 ```python
 # ingest/tpex_parse.py
@@ -607,11 +604,11 @@ from dataclasses import dataclass
 
 from ingest.aggregate import RawRow
 
-_WS = re.compile(r"\s+")
+_DETAIL_FIELDS = ["序號", "券商", "價格", "買進股數", "賣出股數"]
 
 
 class TpexRetry(RuntimeError):
-    """brokerBS returned an operation-timeout stat; caller should re-mint cookie."""
+    """brokerBS did not return stat == 'ok'; caller should re-issue with a fresh token."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,102 +620,56 @@ class BrokerBsPage:
 
 
 def _int(cell) -> int:
-    s = str(cell or "").strip().replace(",", "")
+    s = str(cell).strip().replace(",", "")
     return int(s) if s.lstrip("-").isdigit() else 0
 
 
 def _num(cell) -> float:
-    m = re.search(r"-?\d[\d,]*(?:\.\d+)?", str(cell or ""))
+    m = re.search(r"-?\d[\d,]*(?:\.\d+)?", str(cell))
     return float(m.group(0).replace(",", "")) if m else 0.0
 
 
 def _roc_to_iso(s: str) -> str:
-    nums = re.findall(r"\d+", s)
-    y, m, d = (int(n) for n in nums[:3])
+    y, m, d = (int(n) for n in re.findall(r"\d+", s)[:3])
     return f"{y + 1911:04d}-{m:02d}-{d:02d}"
 
 
-def _split_broker(cell: str) -> tuple[str, str]:
-    cell = str(cell or "").strip()
-    if not cell:
-        return "", ""
-    parts = _WS.split(cell, maxsplit=1)
-    return parts[0], (parts[1] if len(parts) > 1 else "")
-
-
-def _walk_strings(obj):
-    if isinstance(obj, dict):
-        for v in obj.values():
-            yield from _walk_strings(v)
-    elif isinstance(obj, list):
-        for v in obj:
-            yield from _walk_strings(v)
-    elif isinstance(obj, str):
-        yield obj
-
-
 def parse_brokerbs(payload: dict) -> BrokerBsPage:
-    if isinstance(payload, dict) and payload.get("stat") and "逾時" in payload["stat"]:
-        raise TpexRetry(payload["stat"])
+    if not isinstance(payload, dict) or payload.get("stat") != "ok":
+        raise TpexRetry(str(payload.get("stat") if isinstance(payload, dict) else payload))
 
-    blob = " ".join(_walk_strings(payload))
-    stock_id = ""
-    m = re.search(r"證券代號[^\d]*(\d{4,6})", blob)
-    if m:
-        stock_id = m.group(1)
-    trade_date = ""
-    m = re.search(r"(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", blob) or \
-        re.search(r"(\d{2,3})/(\d{1,2})/(\d{1,2})", blob)
-    if m:
-        trade_date = _roc_to_iso("/".join(m.groups()))
-    close_price = 0.0
-    m = re.search(r"收盤價[^\d]*(\d[\d,]*\.?\d*)", blob)
-    if m:
-        close_price = _num(m.group(1))
+    tables = payload.get("tables") or []
+    summary = next((t for t in tables if "收盤價" in (t.get("fields") or [])), None)
+    detail = next((t for t in tables if (t.get("fields") or []) == _DETAIL_FIELDS), None)
+    if summary is None or detail is None:
+        raise TpexRetry("unexpected tables shape")
 
-    # locate the data table: a list of rows whose entries look like [序號, "1020 合庫", 價, 買, 賣]
+    srow = summary["data"][0]
+    sf = summary["fields"]
+    stock_id = str(srow[sf.index("證券代號")]).split()[0]
+    trade_date = _roc_to_iso(str(srow[sf.index("交易日期")]))
+    close_price = _num(srow[sf.index("收盤價")])
+
     rows: list[RawRow] = []
-    for table in _iter_candidate_tables(payload):
-        for rec in table:
-            cells = rec if isinstance(rec, list) else list(rec.values())
-            if len(cells) < 5:
-                continue
-            bid, bname = _split_broker(cells[1])
-            if not (bid.isascii() and any(c.isdigit() for c in bid)):
-                continue
-            rows.append(RawRow(bid, bname, _int(cells[3]), _int(cells[4])))
-        if rows:
-            break
+    for rec in detail["data"]:
+        broker = str(rec[1]).strip()
+        if " " not in broker:
+            continue
+        bid, bname = broker.split(None, 1)
+        rows.append(RawRow(bid, bname.strip(), _int(rec[3]), _int(rec[4])))
     return BrokerBsPage(stock_id, trade_date, close_price, rows)
-
-
-def _iter_candidate_tables(payload):
-    if isinstance(payload, dict):
-        for key in ("tables", "data", "aaData"):
-            val = payload.get(key)
-            if isinstance(val, list) and val and isinstance(val[0], dict) and "data" in val[0]:
-                for t in val:
-                    yield t["data"]
-            elif isinstance(val, list):
-                yield val
-        for v in payload.values():
-            if isinstance(v, (dict, list)):
-                yield from _iter_candidate_tables(v)
-    elif isinstance(payload, list):
-        if payload and isinstance(payload[0], list):
-            yield payload
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_tpex_parse.py -v`
-Expected: PASS (2 tests). If the fixture shape differs, fix `_iter_candidate_tables` / header regexes to match the real JSON and add a comment documenting the actual structure.
+Run: `.venv/Scripts/python.exe -m pytest tests/test_tpex_parse.py -v`
+Expected: PASS (3 tests). If an exact expected value fails, open `tests/fixtures/tpex_sample.json` and correct that literal to the fixture's real value; keep the structural assertions.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add ingest/tpex_parse.py tests/test_tpex_parse.py tests/fixtures/tpex_sample.json
-git commit -m "feat: parse TPEx brokerBS JSON into BrokerBsPage"
+git add ingest/tpex_parse.py tests/test_tpex_parse.py
+git commit -m "feat: parse TPEx brokerBS JSON (tables[summary]+tables[detail]) into BrokerBsPage"
 ```
 
 ---
@@ -1010,58 +961,63 @@ git commit -m "feat: TWSE BSR client — captcha retry, download-link follow, ut
 **Files:**
 - Create: `ingest/tpex_client.py`, `tests/test_tpex_client.py`
 
+**VERIFIED mechanics (2026-09-03) — the plan's earlier "cookie mint + httpx" model was WRONG:**
+- The data endpoint `POST https://www.tpex.org.tw/www/zh-tw/afterTrading/brokerBS` requires the POST body:
+  `cf-turnstile-response=<TOKEN>&code=<id>&id=&response=json`.
+- Without a valid `cf-turnstile-response` the response is `{"stat":"操作逾時..."}`. Cookies alone do NOT authorise it.
+- The Turnstile token is **effectively single-use**: after a query the managed widget re-executes and puts a **new** token in `document.querySelector('[name=cf-turnstile-response]').value` after a short delay.
+- Bare headless `chromium.launch()` on this machine did **not** get a token within 40 s; the token only appeared with a **headed** browser (`headless=False`). So: launch headed. In CI use `xvfb-run`.
+- Therefore the client is **Playwright-driven**: keep one page open, and for each stock read the current token from the live DOM and POST via `page.evaluate(fetch(...))`. On `TpexRetry`, reload the page to get a fresh widget.
+
 **Interfaces:**
 - Consumes: `parse_brokerbs`, `BrokerBsPage`, `TpexRetry` (`ingest.tpex_parse`)
 - Produces:
-  - `@dataclass class TpexSession: cookies: dict[str, str]; user_agent: str`
-  - `mint_session() -> TpexSession` — launches Playwright chromium, loads brokerBS page,
-    waits for Turnstile token, returns cookies + UA. (integration only)
-  - `fetch_stock(client: httpx.Client, sess: TpexSession, stock_id: str) -> BrokerBsPage`
-    — POST brokerBS with `code`, parse; on `TpexRetry` raise it (caller re-mints).
-  - `new_client(sess: TpexSession) -> httpx.Client`
-  - `COOKIE_TTL_SECONDS = 1500`
+  - `build_body(token: str, stock_id: str) -> dict[str, str]` — pure; returns
+    `{"cf-turnstile-response": token, "code": stock_id, "id": "", "response": "json"}`
+  - `class TpexBrowser` — context manager owning a headed Chromium page:
+    - `__enter__` → launch headed chromium, `goto` brokerBS page, wait for first token, return self
+    - `fetch_stock(stock_id: str) -> BrokerBsPage` — read fresh token from DOM, POST via
+      `page.evaluate`, `parse_brokerbs(payload)`; on `TpexRetry` calls `self.reload()` once and retries;
+      re-raises `TpexRetry` if it still fails
+    - `reload()` → re-`goto` the page, wait for a fresh token
+    - `__exit__` → close browser
+  - `PLAYWRIGHT_HEADED = True`
 
-- [ ] **Step 1: Write the failing test (unit — mock transport)**
+- [ ] **Step 1: Write the failing test (unit — pure helper only)**
 
 ```python
 # tests/test_tpex_client.py
 import json
 from pathlib import Path
 
-import httpx
 import pytest
 
 from ingest import tpex_client
-from ingest.tpex_client import TpexSession
-from ingest.tpex_parse import BrokerBsPage, TpexRetry
+from ingest.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "tpex_sample.json").read_text("utf-8"))
 
 
-def test_fetch_stock_parses(monkeypatch):
-    def handler(req: httpx.Request) -> httpx.Response:
-        assert b"code=6488" in req.content
-        return httpx.Response(200, json=FIXTURE)
-    client = httpx.Client(transport=httpx.MockTransport(handler),
-                          base_url="https://www.tpex.org.tw")
-    sess = TpexSession(cookies={"cf_clearance": "x"}, user_agent="ua")
-    page = tpex_client.fetch_stock(client, sess, "6488")
+def test_build_body():
+    b = tpex_client.build_body("TOK123", "6488")
+    assert b == {"cf-turnstile-response": "TOK123", "code": "6488",
+                 "id": "", "response": "json"}
+
+
+def test_parse_path_shared_with_tpex_parse():
+    # fetch_stock's only non-browser logic is parse_brokerbs; confirm the fixture parses
+    page = parse_brokerbs(FIXTURE)
     assert isinstance(page, BrokerBsPage) and page.stock_id == "6488"
 
 
-def test_fetch_stock_timeout_raises_retry():
-    def handler(req):
-        return httpx.Response(200, json={"stat": "操作逾時，請重新整理頁面後再試，謝謝。"})
-    client = httpx.Client(transport=httpx.MockTransport(handler),
-                          base_url="https://www.tpex.org.tw")
-    sess = TpexSession(cookies={}, user_agent="ua")
+def test_parse_brokerbs_timeout_is_retry():
     with pytest.raises(TpexRetry):
-        tpex_client.fetch_stock(client, sess, "6488")
+        parse_brokerbs({"stat": "操作逾時，請重新整理頁面後再試，謝謝。"})
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_tpex_client.py -v`
+Run: `.venv/Scripts/python.exe -m pytest tests/test_tpex_client.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ingest.tpex_client'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1070,86 +1026,116 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'ingest.tpex_client'`
 # ingest/tpex_client.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
 
-import httpx
+from ingest.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
 
-from ingest.tpex_parse import BrokerBsPage, parse_brokerbs
-
-_ENDPOINT = "https://www.tpex.org.tw/www/zh-tw/afterTrading/brokerBS"
 _PAGE = "https://www.tpex.org.tw/zh-tw/mainboard/trading/info/brokerBS.html"
-COOKIE_TTL_SECONDS = 1500
+_ENDPOINT = "https://www.tpex.org.tw/www/zh-tw/afterTrading/brokerBS"
+_TOKEN_SEL = "[name=cf-turnstile-response]"
+PLAYWRIGHT_HEADED = True
+
+_FETCH_JS = """
+async ({endpoint, body}) => {
+  const r = await fetch(endpoint, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded',
+              'X-Requested-With': 'XMLHttpRequest'},
+    body: new URLSearchParams(body).toString(),
+  });
+  return await r.json();
+}
+"""
 
 
-@dataclass
-class TpexSession:
-    cookies: dict[str, str]
-    user_agent: str
+def build_body(token: str, stock_id: str) -> dict[str, str]:
+    return {"cf-turnstile-response": token, "code": stock_id, "id": "", "response": "json"}
 
 
-def new_client(sess: TpexSession) -> httpx.Client:
-    return httpx.Client(timeout=30, follow_redirects=True,
-                        headers={"User-Agent": sess.user_agent,
-                                 "X-Requested-With": "XMLHttpRequest",
-                                 "Referer": _PAGE},
-                        cookies=sess.cookies)
+class TpexBrowser:
+    def __init__(self, *, headed: bool = PLAYWRIGHT_HEADED):
+        self._headed = headed
+        self._pw = self._browser = self._page = None
 
+    def __enter__(self) -> "TpexBrowser":
+        from playwright.sync_api import sync_playwright
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(headless=not self._headed)
+        self._page = self._browser.new_page()
+        self.reload()
+        return self
 
-def fetch_stock(client: httpx.Client, sess: TpexSession, stock_id: str) -> BrokerBsPage:
-    resp = client.post(_ENDPOINT, data={"code": stock_id, "id": "", "response": "json"})
-    return parse_brokerbs(resp.json())     # raises TpexRetry on timeout stat
+    def __exit__(self, *exc) -> None:
+        try:
+            if self._browser:
+                self._browser.close()
+        finally:
+            if self._pw:
+                self._pw.stop()
 
+    def reload(self) -> None:
+        self._page.goto(_PAGE, wait_until="domcontentloaded")
+        self._page.wait_for_function(
+            f"document.querySelector('{_TOKEN_SEL}')?.value.length > 100", timeout=45000)
 
-def mint_session() -> TpexSession:          # pragma: no cover - integration
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
-        page.goto(_PAGE, wait_until="domcontentloaded")
-        page.wait_for_function(
-            "document.querySelector('[name=cf-turnstile-response]')?.value.length > 100",
-            timeout=30000)
-        ua = page.evaluate("navigator.userAgent")
-        cookies = {c["name"]: c["value"] for c in page.context.cookies()}
-        browser.close()
-    return TpexSession(cookies=cookies, user_agent=ua)
+    def _fresh_token(self, *, timeout_s: float = 30.0) -> str:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            tok = self._page.evaluate(
+                f"document.querySelector('{_TOKEN_SEL}')?.value || ''")
+            if len(tok) > 100:
+                return tok
+            time.sleep(1.0)
+        raise TpexRetry("no fresh turnstile token")
+
+    def _query(self, stock_id: str) -> dict:
+        body = build_body(self._fresh_token(), stock_id)
+        return self._page.evaluate(_FETCH_JS, {"endpoint": _ENDPOINT, "body": body})
+
+    def fetch_stock(self, stock_id: str) -> BrokerBsPage:
+        try:
+            return parse_brokerbs(self._query(stock_id))
+        except TpexRetry:
+            self.reload()
+            return parse_brokerbs(self._query(stock_id))
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_tpex_client.py -v`
-Expected: PASS (2 tests)
+Run: `.venv/Scripts/python.exe -m pytest tests/test_tpex_client.py -v`
+Expected: PASS (3 tests)
 
-- [ ] **Step 5: Add the cookie-reuse integration test (milestone-1 acceptance)**
+- [ ] **Step 5: Milestone-1 acceptance — live many-stock integration test**
 
 ```python
 # append to tests/test_tpex_client.py
 @pytest.mark.integration
-def test_cookie_reuse_across_many_stocks():
-    """ACCEPTANCE: one Turnstile solve must serve many stock queries."""
-    from ingest.tpex_client import mint_session, new_client
-    sess = mint_session()
+def test_tpex_browser_fetches_many_stocks():
+    """ACCEPTANCE: one browser session must serve many sequential stock queries
+    (managed Turnstile re-issuing a token per query). If Turnstile hard-blocks
+    after N, this fails and the TPEx leg moves to a self-hosted runner."""
     stocks = ["6488", "5483", "3529", "6510", "8069", "4966", "6415", "3105"]
     ok = 0
-    with new_client(sess) as c:
+    with tpex_client.TpexBrowser() as br:
         for sid in stocks:
             try:
-                page = tpex_client.fetch_stock(c, sess, sid)
-                ok += 1 if page.rows else 0
+                page = br.fetch_stock(sid)
+                ok += 1 if (page.rows and page.stock_id == sid) else 0
             except TpexRetry:
                 pass
-    assert ok >= len(stocks) - 1, f"cookie reuse failed: {ok}/{len(stocks)}"
+    assert ok >= len(stocks) - 1, f"only {ok}/{len(stocks)} succeeded"
 ```
 
-Run manually: `python -m pytest tests/test_tpex_client.py -m integration -v`
-- **PASS** → cookie reuse works; `run.py` re-mints only on `TpexRetry` / TTL. Record result in `README.md`.
-- **FAIL** (each stock needs its own solve) → set milestone flag: TPEx leg must move to a self-hosted runner. Document in `README.md`, and in `run.py` (Task 11) gate the TPEx leg behind env `TPEX_ENABLED` (default `"1"`, set `"0"` in the GitHub workflow, `"1"` on the local runner).
+Run manually: `.venv/Scripts/python.exe -m pytest tests/test_tpex_client.py -m integration -v`
+- **PASS** → the daily pipeline drives TPEx through one `TpexBrowser` per run; record in `README.md` with the observed success rate and any needed `reload()` cadence.
+- **FAIL / heavy blocking** → record in `README.md`; the TPEx leg runs on a **self-hosted runner** (user's PC, residential IP). In `run.py` (Task 11) the TPEx leg is already gated by env `TPEX_ENABLED` (default `"1"`; the GitHub workflow sets `"0"`, the local runner `"1"`).
+- If it passes only with a periodic reload, add `if i % K == 0: br.reload()` to the loop and note `K`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add ingest/tpex_client.py tests/test_tpex_client.py
-git commit -m "feat: TPEx client (Playwright cookie mint + httpx query)"
+git commit -m "feat: TPEx client — headed Playwright, token-per-request via page.evaluate"
 ```
 
 ---
@@ -1578,10 +1564,8 @@ from ingest.schema import BranchFlow
 from ingest.storage import (asset_url, load_manifest, merge_manifest,
                             prune_old_releases, release_tag, save_manifest,
                             upload_assets, write_parquet)
-from ingest.twse_client import BsrError, fetch_stock as twse_fetch, new_client as twse_new
-from ingest.tpex_client import (TpexSession, fetch_stock as tpex_fetch,
-                                mint_session, new_client as tpex_new)
-from ingest.tpex_parse import TpexRetry
+from ingest.twse_client import fetch_stock as twse_fetch, new_client as twse_new
+from ingest.tpex_client import TpexBrowser
 from ingest.universe import Stock, resolved_trading_date, tpex_traded, twse_traded
 
 _TW = ZoneInfo("Asia/Taipei")
@@ -1613,19 +1597,14 @@ def _twse_one(client, date_iso):
     return inner
 
 
-def _tpex_one(client, sess: TpexSession, date_iso):
+def _tpex_one(browser: TpexBrowser, date_iso):
+    # NOTE: one shared headed browser, one page, token-per-request -> MUST run sequentially
+    # (fetch_market with workers=1). browser.fetch_stock already reloads once on TpexRetry.
     def inner(s: Stock) -> list[BranchFlow]:
-        for _ in range(2):
-            try:
-                page = tpex_fetch(client, sess, s.stock_id)
-                close = page.close_price or s.close_price   # brokerBS carries close; fall back
-                return aggregate(page.rows, date=date_iso, market="tpex",
-                                 stock_id=s.stock_id, close_price=close)
-            except TpexRetry:
-                sess2 = mint_session()
-                sess.cookies, sess.user_agent = sess2.cookies, sess2.user_agent
-                client.cookies.update(sess.cookies)
-        raise RuntimeError(f"{s.stock_id}: tpex retry exhausted")
+        page = browser.fetch_stock(s.stock_id)
+        close = page.close_price or s.close_price   # brokerBS carries close; fall back
+        return aggregate(page.rows, date=date_iso, market="tpex",
+                         stock_id=s.stock_id, close_price=close)
     return inner
 
 
@@ -1668,10 +1647,8 @@ def main(argv: list[str] | None = None) -> int:
     _write_upload("twse", flows, failed, twse_stocks, args, started, manifest)
 
     if not args.skip_tpex:
-        sess = mint_session()
-        with tpex_new(sess) as pc:
-            flows, failed = fetch_market(tpex_stocks, _tpex_one(pc, sess, args.date),
-                                         workers=args.workers)
+        with TpexBrowser() as br:                       # headed; sequential (workers=1)
+            flows, failed = fetch_market(tpex_stocks, _tpex_one(br, args.date), workers=1)
         all_flows["tpex"] = flows
         _write_upload("tpex", flows, failed, tpex_stocks, args, started, manifest)
 
