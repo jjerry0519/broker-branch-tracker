@@ -79,12 +79,20 @@ broker-branch-tracker/
 httpx==0.27.2
 ddddocr==1.6.1
 playwright==1.49.1
+patchright==1.49.1
 beautifulsoup4==4.12.3
 lxml==5.3.0
 pandas==2.2.3
 pyarrow==18.1.0
 pytest==8.3.3
+duckdb==1.1.3
 ```
+
+> `patchright` added 2026-09-07: vanilla Playwright is detected by TPEx's Cloudflare
+> managed Turnstile (`[Cloudflare Turnstile] Error: 600010`, no token ever issued).
+> `patchright` (stealth drop-in, `from patchright.sync_api import sync_playwright`)
+> passes it — spikes from a residential IP hit 7/8 and 5/5 on the many-stock test.
+> Install its browser once: `python -m patchright install chromium`.
 
 > Versions bumped 2026-09-03 for Python 3.13 wheel availability: `ddddocr` 1.5.6 caps at `<3.13`; `pyarrow` 17 has no cp313 wheel (18+ does); `playwright` 1.47 pulls `greenlet` 3.0.3 which has no cp313 wheel (1.48+ pulls 3.1.x). `duckdb` is used only in tests — add `duckdb==1.1.3` to `requirements.txt` as well (Task 10/11 tests import it).
 
@@ -974,18 +982,25 @@ git commit -m "feat: TWSE BSR client — captcha retry, download-link follow, ut
 **Interfaces:**
 - Consumes: `parse_brokerbs`, `BrokerBsPage`, `TpexRetry` (`ingest.tpex_parse`)
 - Produces:
-  - `build_body(token: str, stock_id: str) -> dict[str, str]` — pure; returns
+  - `build_body(token: str, stock_id: str) -> dict[str, str]` — pure; returns, **in this key order**,
     `{"cf-turnstile-response": token, "code": stock_id, "id": "", "response": "json"}`
-  - `class TpexBrowser` — context manager owning a headed Chromium page:
-    - `__enter__` → launch headed chromium, `goto` brokerBS page, wait for first token, return self
-    - `fetch_stock(stock_id: str) -> BrokerBsPage` — read fresh token from DOM, POST via
-      `page.evaluate`, `parse_brokerbs(payload)`; on `TpexRetry` calls `self.reload()` once and retries;
-      re-raises `TpexRetry` if it still fails
-    - `reload()` → re-`goto` the page, wait for a fresh token
-    - `__exit__` → close browser
+  - `class TpexBrowser` — context manager owning ONE **patchright** headed Chromium page:
+    - `__enter__` → `sync_playwright().start()` → `chromium.launch(headless=False)` → `new_page()`.
+      **Exception-safe**: if any step raises, tear down whatever started, then re-raise.
+    - `reload()` → `page.goto(brokerBS)` + `wait_for_function` until the token field length > 100
+      (timeout 45 s). This is how a fresh Turnstile token is obtained — the managed widget does
+      **not** re-issue a usable token on its own within a useful window, so every query is preceded
+      by a `reload()`.
+    - `fetch_stock(stock_id: str) -> BrokerBsPage` → `reload()` → read token from DOM →
+      POST via `page.evaluate(_FETCH_JS, ...)` → `parse_brokerbs`. On `TpexRetry`: one more
+      `reload()` + query; if it still raises `TpexRetry`, propagate.
+    - `__exit__` → close browser, then stop the playwright driver (both, in `finally`).
   - `PLAYWRIGHT_HEADED = True`
 
-- [ ] **Step 1: Write the failing test (unit — pure helper only)**
+**Speed:** ~6–8 s per stock (reload gets the token in ~6 s, query ~1 s). ~800 OTC stocks ≈ **1.5–2 h**.
+Spikes (residential IP, this design): 7/8 and 5/5 on the many-stock test.
+
+- [ ] **Step 1: Write the failing test (unit — no browser)**
 
 ```python
 # tests/test_tpex_client.py
@@ -1000,14 +1015,14 @@ from ingest.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "tpex_sample.json").read_text("utf-8"))
 
 
-def test_build_body():
+def test_build_body_shape_and_key_order():
     b = tpex_client.build_body("TOK123", "6488")
     assert b == {"cf-turnstile-response": "TOK123", "code": "6488",
                  "id": "", "response": "json"}
+    assert list(b) == ["cf-turnstile-response", "code", "id", "response"]
 
 
 def test_parse_path_shared_with_tpex_parse():
-    # fetch_stock's only non-browser logic is parse_brokerbs; confirm the fixture parses
     page = parse_brokerbs(FIXTURE)
     assert isinstance(page, BrokerBsPage) and page.stock_id == "6488"
 
@@ -1015,6 +1030,37 @@ def test_parse_path_shared_with_tpex_parse():
 def test_parse_brokerbs_timeout_is_retry():
     with pytest.raises(TpexRetry):
         parse_brokerbs({"stat": "操作逾時，請重新整理頁面後再試，謝謝。"})
+
+
+class _FakeBrowser(tpex_client.TpexBrowser):
+    """Subclass that stubs the browser layer so fetch_stock's retry logic is testable."""
+    def __init__(self, queries):
+        super().__init__()
+        self._queries = list(queries)   # each item: dict payload OR an exception to raise
+        self.reload_calls = 0
+
+    def reload(self):
+        self.reload_calls += 1
+
+    def _query(self, stock_id):
+        item = self._queries.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def test_fetch_stock_retries_once_then_succeeds():
+    ok = FIXTURE
+    br = _FakeBrowser([TpexRetry("timeout"), ok])
+    page = br.fetch_stock("6488")
+    assert page.stock_id == "6488"
+    assert br.reload_calls == 2          # once before the 1st query, once on retry
+
+
+def test_fetch_stock_reraises_after_second_failure():
+    br = _FakeBrowser([TpexRetry("t1"), TpexRetry("t2")])
+    with pytest.raises(TpexRetry):
+        br.fetch_stock("6488")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1027,8 +1073,6 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'ingest.tpex_client'`
 ```python
 # ingest/tpex_client.py
 from __future__ import annotations
-
-import time
 
 from ingest.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
 
@@ -1060,41 +1104,49 @@ class TpexBrowser:
         self._pw = self._browser = self._page = None
 
     def __enter__(self) -> "TpexBrowser":
-        from playwright.sync_api import sync_playwright
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=not self._headed)
-        self._page = self._browser.new_page()
-        self.reload()
+        # patchright: stealth Playwright drop-in that passes TPEx's managed Turnstile
+        from patchright.sync_api import sync_playwright
+        try:
+            self._pw = sync_playwright().start()
+            self._browser = self._pw.chromium.launch(headless=not self._headed)
+            self._page = self._browser.new_page()
+        except Exception:
+            self._teardown()
+            raise
         return self
 
-    def __exit__(self, *exc) -> None:
+    def _teardown(self) -> None:
         try:
-            if self._browser:
+            if self._browser is not None:
                 self._browser.close()
+        except Exception:
+            pass
         finally:
-            if self._pw:
+            if self._pw is not None:
                 self._pw.stop()
+            self._pw = self._browser = self._page = None
+
+    def __exit__(self, *exc) -> None:
+        self._teardown()
 
     def reload(self) -> None:
+        # a fresh Turnstile token per query: reload the page and wait for the widget
         self._page.goto(_PAGE, wait_until="domcontentloaded")
         self._page.wait_for_function(
             f"document.querySelector('{_TOKEN_SEL}')?.value.length > 100", timeout=45000)
 
-    def _fresh_token(self, *, timeout_s: float = 30.0) -> str:
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            tok = self._page.evaluate(
-                f"document.querySelector('{_TOKEN_SEL}')?.value || ''")
-            if len(tok) > 100:
-                return tok
-            time.sleep(1.0)
-        raise TpexRetry("no fresh turnstile token")
+    def _token(self) -> str:
+        tok = self._page.evaluate(f"document.querySelector('{_TOKEN_SEL}')?.value || ''")
+        if len(tok) <= 100:
+            raise TpexRetry("no turnstile token after reload")
+        return tok
 
     def _query(self, stock_id: str) -> dict:
-        body = build_body(self._fresh_token(), stock_id)
+        body = build_body(self._token(), stock_id)
         return self._page.evaluate(_FETCH_JS, {"endpoint": _ENDPOINT, "body": body})
 
     def fetch_stock(self, stock_id: str) -> BrokerBsPage:
+        self.reload()
         try:
             return parse_brokerbs(self._query(stock_id))
         except TpexRetry:
@@ -1105,7 +1157,9 @@ class TpexBrowser:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_tpex_client.py -v`
-Expected: PASS (3 tests)
+Expected: PASS (5 tests). `test_fetch_stock_retries_once_then_succeeds` proves `reload()` fires
+before every `_query` (2 reloads: initial + retry); `_FakeBrowser` overrides `reload`/`_query`
+so no browser is launched.
 
 - [ ] **Step 5: Milestone-1 acceptance — live many-stock integration test**
 
@@ -1128,16 +1182,20 @@ def test_tpex_browser_fetches_many_stocks():
     assert ok >= len(stocks) - 1, f"only {ok}/{len(stocks)} succeeded"
 ```
 
-Run manually: `.venv/Scripts/python.exe -m pytest tests/test_tpex_client.py -m integration -v`
-- **PASS** → the daily pipeline drives TPEx through one `TpexBrowser` per run; record in `README.md` with the observed success rate and any needed `reload()` cadence.
-- **FAIL / heavy blocking** → record in `README.md`; the TPEx leg runs on a **self-hosted runner** (user's PC, residential IP). In `run.py` (Task 11) the TPEx leg is already gated by env `TPEX_ENABLED` (default `"1"`; the GitHub workflow sets `"0"`, the local runner `"1"`).
-- If it passes only with a periodic reload, add `if i % K == 0: br.reload()` to the loop and note `K`.
+First: `.venv/Scripts/python.exe -m patchright install chromium` (one-time browser download).
+Then run manually (headed window will open):
+`PLAYWRIGHT_NODEJS_PATH="C:/Program Files/nodejs/node.exe" .venv/Scripts/python.exe -m pytest tests/test_tpex_client.py -m integration -v`
+- Expect ≥ 7/8. Record the observed success count and total wall-time in `.superpowers/sdd/task-8-report.md`.
+- If it hard-blocks (no token at all, `Error: 600010`) → patchright's browser isn't installed, or `PLAYWRIGHT_NODEJS_PATH` isn't set. Fix those and re-run. If still blocked, report it — do not hammer.
+- **Known-open, NOT this task's problem:** whether patchright also passes Turnstile from a GitHub-Actions datacenter IP is unverified and is decided at Task 14's first CI run. Don't try to solve it here.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add ingest/tpex_client.py tests/test_tpex_client.py
-git commit -m "feat: TPEx client — headed Playwright, token-per-request via page.evaluate"
+git add ingest/tpex_client.py tests/test_tpex_client.py requirements.txt
+git commit -m "fix: TPEx client via patchright (beats managed Turnstile); reload-per-query; leak-safe __enter__
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ```
 
 ---

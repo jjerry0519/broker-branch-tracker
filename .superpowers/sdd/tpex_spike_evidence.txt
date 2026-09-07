@@ -1,0 +1,26 @@
+6488: stat=ok rows=10875 q=1.5s
+5483: NO fresh token
+5483: stat=ok rows=4584 q=0.9s
+3529: NO fresh token
+3529: stat=ok rows=3526 q=0.9s
+6510: NO fresh token
+6510: stat=ok rows=4203 q=0.8s
+8069: NO fresh token
+8069: stat=ok rows=1751 q=0.6s
+4966: NO fresh token
+4966: stat=ok rows=680 q=0.4s
+6415: NO fresh token
+6415: stat=TIMEOUT rows=0 q=0.3s
+3105: NO fresh token
+3105: stat=ok rows=10763 q=1.5s
+=== 7/8 succeeded in 322s ===
+6488 OK rows=10875 2.0s
+5483 no token -> reload
+5483 OK rows=4584 1.2s
+3529 no token -> reload
+3529 OK rows=3526 2.2s
+6510 no token -> reload
+6510 OK rows=4203 1.0s
+8069 no token -> reload
+8069 OK rows=1751 0.4s
+RESULT 5/5 in 182s
