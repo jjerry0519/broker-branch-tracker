@@ -20,6 +20,8 @@
 - 金額單位：股數一律 `int`（股，非張）；價格 `float`。
 - 所有時間戳以 UTC ISO8601 字串寫入 log。
 - 測試分層：不需網路的用 `pytest`（CI 必跑）；需真站台的標 `@pytest.mark.integration`（CI 不跑，手動 `pytest -m integration`）。
+- **Windows DLL 順序**：`import onnxruntime` 必須在 `import pyarrow` 之前，否則 onnxruntime 原生 DLL 載入失敗。已由 `ingest/__init__.py` + 根目錄 `conftest.py` 各自 `import onnxruntime` 處理；新模組不要在 `ingest/__init__.py` 之外搶先 import pyarrow。
+- 本機 Playwright：bundled node v22 在此機 segfault；需要時設 `PLAYWRIGHT_NODEJS_PATH=C:\Program Files\nodejs\node.exe`（system node v24）。CI（ubuntu）不受影響。
 
 ---
 
