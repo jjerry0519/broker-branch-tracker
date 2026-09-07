@@ -1,5 +1,11 @@
 from ingest.schema import BranchFlow
-from ingest.storage import merge_manifest, prune_old_releases, release_tag, write_parquet
+from ingest.storage import (
+    merge_manifest,
+    prune_old_releases,
+    release_tag,
+    upload_assets,
+    write_parquet,
+)
 
 
 def test_release_tag():
@@ -37,8 +43,39 @@ def test_prune_selects_old_tags(monkeypatch):
     monkeypatch.setattr("ingest.storage._gh", lambda *a, **k: calls.append(a))
     deleted = prune_old_releases(repo="me/x", keep_months=13, today="2026-09-03")
     # data-*: keep 13 months -> cutoff 2025-08; data-2024-01 is older -> deleted,
-    # data-2026-08 kept. raw-*: keep 2 months -> cutoff 2026-06; raw-2026-07 kept.
+    # data-2026-08 kept. raw-*: keep 2 months -> cutoff 2026-07; raw-2026-07 kept.
     # v1.0 has no data-/raw- prefix -> left alone.
     assert deleted == ["data-2024-01"]
     assert calls == [("release", "delete", "data-2024-01", "--repo", "me/x",
                       "--yes", "--cleanup-tag")]
+
+
+def test_upload_assets_release_exists_skips_create(monkeypatch):
+    calls = []
+    monkeypatch.setattr("ingest.storage._gh_json",
+                        lambda *a, **k: [{"tagName": "data-2026-09"}])
+    monkeypatch.setattr("ingest.storage._gh", lambda *a, **k: calls.append(a))
+    upload_assets("data-2026-09", ["/tmp/a.parquet", "/tmp/b.parquet"], repo="me/x")
+    assert not any(a[:2] == ("release", "create") for a in calls)
+    assert calls == [
+        ("release", "upload", "data-2026-09", "/tmp/a.parquet", "/tmp/b.parquet",
+         "--repo", "me/x", "--clobber"),
+    ]
+
+
+def test_upload_assets_release_missing_creates_then_uploads(monkeypatch):
+    calls = []
+    monkeypatch.setattr("ingest.storage._gh_json",
+                        lambda *a, **k: [{"tagName": "data-2026-08"}])
+    monkeypatch.setattr("ingest.storage._gh", lambda *a, **k: calls.append(a))
+    upload_assets("data-2026-09", ["/tmp/a.parquet", "/tmp/b.parquet"], repo="me/x")
+    assert len(calls) == 2
+    create = calls[0]
+    assert create[:3] == ("release", "create", "data-2026-09")
+    assert "--repo" in create and create[create.index("--repo") + 1] == "me/x"
+    assert "--title" in create and create[create.index("--title") + 1] == "data-2026-09"
+    assert "--notes" in create and "data-2026-09" in create[create.index("--notes") + 1]
+    assert calls[1] == (
+        "release", "upload", "data-2026-09", "/tmp/a.parquet", "/tmp/b.parquet",
+        "--repo", "me/x", "--clobber",
+    )
