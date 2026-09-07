@@ -19,3 +19,5 @@ Task 8 REWRITE: TPEx POST needs cf-turnstile-response=<token> in body; token sin
 OPEN DECISION (defer to after Task 8 integration test measures real TPEx timing): TPEx sequential token-per-request ~= 65-110 min/day -> monthly ~2100 min may exceed 2000 free private-repo Actions minutes. Options: self-hosted runner / public-code-repo+Drive-data / accept overage. Decide with real numbers post-Task-8.
 Task 5: complete (commit ee474cc, review ✅ — minors: _num→0.0 on "--" [handled: Task11 _tpex_one "close = page.close_price or s.close_price" falls back to OpenAPI], bare subscription on tables). No fixture-value edits needed.
 Task 6: complete (commit 3bb7f48, review ✅ no issues, 100% captcha sample hit rate).
+Task 7: complete (commit 4cab86b, review ✅ — minors: no raise_for_status, guid AttributeError not wrapped in BsrError, retry-count not asserted; all brief-inherited). Live fetch_stock verified: 2330 6104 rows 1 captcha attempt 3.1s.
+BLOCKER FOUND: import pyarrow BEFORE onnxruntime -> DLL load fail on this Windows box. Fix pending (conftest.py + ingest/__init__.py import onnxruntime first). Currently 2 test_captcha failures in full-suite runs.
