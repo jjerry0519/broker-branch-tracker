@@ -67,28 +67,26 @@ jobs:
       - name: Install xvfb (TpexBrowser launches headed)
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
-      - name: Cloudflare WARP (consumer mode, no account) — non-GitHub egress IP for TPEx
+      - name: WARP via wgcf + wg-quick (no account) — non-GitHub egress IP for TPEx
         if: ${{ inputs.use_warp != 'false' }}
         run: |
           set -e
-          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
-            | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
-            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update -y
-          sudo apt-get install -y cloudflare-warp
-          sudo systemctl enable --now warp-svc || sudo warp-svc &
-          sleep 5
-          warp-cli --accept-tos registration new
-          warp-cli --accept-tos mode warp
-          warp-cli --accept-tos connect
-          for i in $(seq 1 30); do
-            t=$(curl -s https://www.cloudflare.com/cdn-cgi/trace/ || true)
-            echo "$t" | grep -q "warp=on" && { echo "WARP up:"; echo "$t" | grep -E "warp=|ip="; break; }
-            sleep 2
+          sudo apt-get install -y wireguard-tools resolvconf
+          WGCF_VER=2.2.29
+          curl -fsSL "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VER}/wgcf_${WGCF_VER}_linux_amd64" -o wgcf
+          chmod +x wgcf
+          ./wgcf register --accept-tos
+          ./wgcf generate               # writes wgcf-profile.conf (AllowedIPs 0.0.0.0/0, ::/0)
+          sudo cp wgcf-profile.conf /etc/wireguard/warp.conf
+          sudo wg-quick up warp
+          for i in $(seq 1 20); do
+            t=$(curl -s --max-time 8 https://www.cloudflare.com/cdn-cgi/trace/ || true)
+            echo "$t" | grep -q "warp=on" && { echo "WARP UP:"; echo "$t" | grep -E "warp=|ip=|loc="; break; }
+            sleep 3
           done
           curl -s https://www.cloudflare.com/cdn-cgi/trace/ | grep -q "warp=on" \
-            || { echo "::warning::WARP did not come up; proceeding on the GH IP"; }
+            && echo "egress is now via Cloudflare WARP" \
+            || { echo "::error::WARP tunnel did not come up"; exit 1; }
 
       - name: Weekly reference refresh (Mondays only)
         run: |
