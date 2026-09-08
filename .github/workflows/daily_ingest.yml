@@ -24,6 +24,11 @@ on:
         required: false
         default: false
         type: boolean
+      use_warp:
+        description: "Route egress through Cloudflare WARP (needed for TPEx from GH IPs)"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write                    # commit manifest/log/reference back to this public repo
@@ -61,6 +66,29 @@ jobs:
 
       - name: Install xvfb (TpexBrowser launches headed)
         run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Cloudflare WARP (consumer mode, no account) — non-GitHub egress IP for TPEx
+        if: ${{ inputs.use_warp != 'false' }}
+        run: |
+          set -e
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -y
+          sudo apt-get install -y cloudflare-warp
+          sudo systemctl enable --now warp-svc || sudo warp-svc &
+          sleep 5
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos mode warp
+          warp-cli --accept-tos connect
+          for i in $(seq 1 30); do
+            t=$(curl -s https://www.cloudflare.com/cdn-cgi/trace/ || true)
+            echo "$t" | grep -q "warp=on" && { echo "WARP up:"; echo "$t" | grep -E "warp=|ip="; break; }
+            sleep 2
+          done
+          curl -s https://www.cloudflare.com/cdn-cgi/trace/ | grep -q "warp=on" \
+            || { echo "::warning::WARP did not come up; proceeding on the GH IP"; }
 
       - name: Weekly reference refresh (Mondays only)
         run: |
