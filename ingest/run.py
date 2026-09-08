@@ -96,6 +96,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip-tpex", action="store_true",
                     default=os.environ.get("TPEX_ENABLED", "1") == "0")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--twse-limit", type=int,
+                    default=int(os.environ.get("TWSE_LIMIT", "0")))
+    ap.add_argument("--tpex-limit", type=int,
+                    default=int(os.environ.get("TPEX_LIMIT", "0")))
     args = ap.parse_args(argv)
     started = dt.datetime.now(dt.UTC).isoformat()
 
@@ -111,6 +115,10 @@ def main(argv: list[str] | None = None) -> int:
     with httpx.Client() as uc:
         twse_stocks = twse_traded(uc)
         tpex_stocks = [] if args.skip_tpex else tpex_traded(uc)
+    if args.twse_limit > 0:
+        twse_stocks = twse_stocks[:args.twse_limit]
+    if args.tpex_limit > 0:
+        tpex_stocks = tpex_stocks[:args.tpex_limit]
 
     all_flows: dict[str, list[BranchFlow]] = {"twse": [], "tpex": []}
     manifest = load_manifest()
