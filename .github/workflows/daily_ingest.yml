@@ -1,0 +1,84 @@
+name: daily-ingest
+
+on:
+  schedule:
+    - cron: "0 10 * * 1-5"          # 18:00 Asia/Taipei, Mon-Fri
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "ISO date to ingest (default: today TW)"
+        required: false
+        type: string
+      tpex_limit:
+        description: "Cap TPEx stocks (fast smoke test, e.g. 15). Empty = no cap."
+        required: false
+        default: ""
+        type: string
+      twse_limit:
+        description: "Cap TWSE stocks (fast smoke test). Empty = no cap."
+        required: false
+        default: ""
+        type: string
+      skip_tpex:
+        description: "Skip the TPEx leg entirely"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write                    # commit manifest/log/reference back to this public repo
+
+concurrency:
+  group: daily-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      # Parquet assets are uploaded to the PRIVATE data repo via `gh` (reads GH_TOKEN).
+      GH_REPO: jjerry0519/broker-branch-tracker-data
+      GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+      # skip_tpex input -> TPEX_ENABLED ("0" == --skip-tpex). Schedule runs: unset input -> "1".
+      TPEX_ENABLED: ${{ inputs.skip_tpex && '0' || '1' }}
+      # Empty inputs collapse to "0" so run.py's int(os.environ[...]) parse never sees "".
+      TWSE_LIMIT: ${{ inputs.twse_limit || '0' }}
+      TPEX_LIMIT: ${{ inputs.tpex_limit || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      - name: Install patchright Chromium
+        run: python -m patchright install --with-deps chromium
+
+      - name: Install xvfb (TpexBrowser launches headed)
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Weekly reference refresh (Mondays only)
+        run: |
+          if [ "$(date -u +%u)" = "1" ]; then
+            python -c "from ingest.reference import refresh_reference_db; print(refresh_reference_db())"
+          else
+            echo "not Monday (UTC) -- skipping reference refresh"
+          fi
+
+      - name: Ingest
+        env:
+          date: ${{ inputs.date }}
+        run: xvfb-run -a python -m ingest.run ${date:+--date $date}
+
+      - name: Commit manifest / log / reference
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json logs/ingest_log.jsonl reference.db
+          git commit -m "data: ingest $(date -u +%F) [skip ci]" || echo "nothing to commit"
+          git push
