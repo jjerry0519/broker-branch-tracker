@@ -1,0 +1,13 @@
+{
+  "days": {
+    "2026-09-07": {
+      "twse": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-07_twse.parquet",
+      "rows": {
+        "twse": 898,
+        "tpex": 0
+      },
+      "tpex": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-07_tpex.parquet"
+    }
+  },
+  "updated": "2026-09-08T10:15:50.802558+00:00"
+}
