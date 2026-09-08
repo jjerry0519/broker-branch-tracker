@@ -96,19 +96,29 @@ def tpex_traded(client: httpx.Client) -> list[Stock]:
     return parse_tpex_daily_close(r.json())
 
 
+_STOCK_DAY_ALL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+
+
 def resolved_trading_date(client: httpx.Client) -> str | None:
-    """ISO date shown as 資料日期 on the BSR menu page, iff it equals today
-    (Asia/Taipei).  Otherwise None -> non-trading day, or not yet published.
+    """Latest trading day for which TWSE has published daily close data, as ISO
+    ``YYYY-MM-DD`` — taken from the ``Date`` field of STOCK_DAY_ALL (ROC form
+    ``1150907`` -> ``2026-09-07``). ``None`` only if the endpoint is unreachable
+    or no row carries a parseable date.
+
+    On the 18:00 Asia/Taipei cron this equals "today" on a trading day and the
+    previous trading day on a holiday; the orchestrator treats an already-ingested
+    date as a skip, so a holiday cron fire is a no-op. The BSR menu page no longer
+    carries a data date, which is why this uses the OpenAPI feed instead.
     """
-    r = client.get(_BSR_MENU_URL, timeout=30, headers={"User-Agent": _UA})
-    r.raise_for_status()
-    m = re.search(r"資料日期[:：]?\s*(\d{4})/(\d{1,2})/(\d{1,2})", r.text)
-    if not m:
-        soup = BeautifulSoup(r.text, "lxml")
-        m = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})", soup.get_text())
-    if not m:
+    try:
+        r = client.get(_STOCK_DAY_ALL, timeout=60, headers={"User-Agent": _UA})
+        r.raise_for_status()
+        rows = r.json()
+    except (httpx.HTTPError, ValueError):
         return None
-    y, mo, d = (int(x) for x in m.groups())
-    site_date = f"{y:04d}-{mo:02d}-{d:02d}"
-    today = dt.datetime.now(_TW).date().isoformat()
-    return site_date if site_date == today else None
+    for row in rows:
+        m = re.fullmatch(r"(\d{3})(\d{2})(\d{2})", str(row.get("Date", "")).strip())
+        if m:
+            y, mo, d = (int(x) for x in m.groups())
+            return f"{y + 1911:04d}-{mo:02d}-{d:02d}"
+    return None

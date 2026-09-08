@@ -37,32 +37,72 @@ def _read_log(tmp_path: Path) -> list[dict]:
     return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln]
 
 
-def test_main_non_trading_day_skips(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    wrote: list = []
-
-    # Site shows a different date than the target -> guard trips.
-    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-04")
+def _guard_traps(monkeypatch, wrote):
+    """Booby-trap everything past the guard so a skip is proven, not assumed."""
     monkeypatch.setattr(run, "twse_traded", lambda c: (_ for _ in ()).throw(
-        AssertionError("universe must not be built on a non-trading day")))
+        AssertionError("universe must not be built past the guard")))
     monkeypatch.setattr(run, "tpex_traded", lambda c: [])
     monkeypatch.setattr(run, "fetch_market", lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("fetch_market must not run")))
+        AssertionError("fetch_market must not run past the guard")))
     monkeypatch.setattr(run, "write_parquet", lambda *a, **k: wrote.append(a) or 0)
     monkeypatch.setattr(run, "upload_assets", lambda *a, **k: None)
     monkeypatch.setattr(run, "prune_old_releases", lambda *a, **k: None)
     monkeypatch.setattr(run, "TpexBrowser", lambda *a, **k: (_ for _ in ()).throw(
         AssertionError("TpexBrowser must not be constructed")))
 
-    rc = main(["--date", "2026-09-03"])
+
+def test_main_skips_when_trading_date_unresolvable(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    wrote: list = []
+    monkeypatch.setattr(run, "resolved_trading_date", lambda c: None)
+    _guard_traps(monkeypatch, wrote)
+
+    rc = main([])
 
     assert rc == 0
-    assert wrote == []                       # no parquet written
+    assert wrote == []
+    rows = _read_log(tmp_path)
+    assert len(rows) == 1 and rows[0]["status"] == "skipped"
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_main_skips_when_date_already_ingested(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    wrote: list = []
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"days": {"2026-09-04": {"rows": {"twse": 1}}}}), encoding="utf-8")
+    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-04")
+    _guard_traps(monkeypatch, wrote)
+
+    rc = main([])
+
+    assert rc == 0
+    assert wrote == []
     rows = _read_log(tmp_path)
     assert len(rows) == 1
-    assert rows[0]["status"] == "skipped"
-    assert rows[0]["date"] == "2026-09-03"
-    assert not (tmp_path / "manifest.json").exists()
+    assert rows[0]["status"] == "skipped" and rows[0]["date"] == "2026-09-04"
+    assert rows[0]["note"] == "already ingested"
+
+
+def test_main_force_reingests_known_date(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"days": {"2026-09-04": {"rows": {"twse": 1}}}}), encoding="utf-8")
+    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-04")
+    monkeypatch.setattr(run, "twse_traded",
+                        lambda c: [Stock("2330", "台積電", "twse", 1085.0)])
+    monkeypatch.setattr(run, "tpex_traded", lambda c: [])
+    monkeypatch.setattr(run, "fetch_market", lambda s, fn, **k: (
+        [BranchFlow("2026-09-04", "twse", "2330", "9200", "凱基", 10, 0, 10, 1.0)], []))
+    monkeypatch.setattr(run, "write_parquet", lambda flows, path: len(list(flows)))
+    monkeypatch.setattr(run, "upload_assets", lambda *a, **k: None)
+    monkeypatch.setattr(run, "prune_old_releases", lambda *a, **k: None)
+
+    rc = main(["--skip-tpex", "--repo", "", "--force"])
+
+    assert rc == 0
+    rows = _read_log(tmp_path)
+    assert any(r["status"] == "ok" and r["market"] == "twse" for r in rows)
 
 
 def test_main_happy_path_skip_tpex(tmp_path, monkeypatch):

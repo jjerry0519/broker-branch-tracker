@@ -91,10 +91,12 @@ def _append_log(rec: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--date", default=dt.datetime.now(_TW).date().isoformat())
+    ap.add_argument("--date", default="")   # empty -> use the resolved latest trading date
     ap.add_argument("--repo", default=os.environ.get("GH_REPO", ""))
     ap.add_argument("--skip-tpex", action="store_true",
                     default=os.environ.get("TPEX_ENABLED", "1") == "0")
+    ap.add_argument("--force", action="store_true",
+                    help="ingest even if this date is already in the manifest")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--twse-limit", type=int,
                     default=int(os.environ.get("TWSE_LIMIT", "0")))
@@ -104,12 +106,25 @@ def main(argv: list[str] | None = None) -> int:
     started = dt.datetime.now(dt.UTC).isoformat()
 
     with httpx.Client() as probe:
-        site_date = resolved_trading_date(probe)
-    if site_date != args.date:
-        _append_log({"date": args.date, "market": "*", "status": "skipped",
-                     "note": f"site date {site_date}", "started_at": started,
+        target = resolved_trading_date(probe)
+    if target is None:
+        _append_log({"date": args.date or "?", "market": "*", "status": "skipped",
+                     "note": "could not resolve latest trading date",
+                     "started_at": started,
                      "finished_at": dt.datetime.now(dt.UTC).isoformat()})
-        print(f"non-trading day or not published ({site_date}); skip")
+        print("could not resolve latest trading date (STOCK_DAY_ALL); skip")
+        return 0
+    if args.date and args.date != target:
+        # cannot backfill: the sources only serve the latest trading day
+        print(f"requested --date {args.date} != latest published {target}; ignoring, using {target}")
+    args.date = target
+
+    manifest = load_manifest()
+    if not args.force and target in manifest.get("days", {}):
+        _append_log({"date": target, "market": "*", "status": "skipped",
+                     "note": "already ingested", "started_at": started,
+                     "finished_at": dt.datetime.now(dt.UTC).isoformat()})
+        print(f"{target} already ingested; skip (use --force to re-run)")
         return 0
 
     with httpx.Client() as uc:
@@ -121,7 +136,6 @@ def main(argv: list[str] | None = None) -> int:
         tpex_stocks = tpex_stocks[:args.tpex_limit]
 
     all_flows: dict[str, list[BranchFlow]] = {"twse": [], "tpex": []}
-    manifest = load_manifest()
 
     with twse_new() as tc:
         flows, failed = fetch_market(twse_stocks, _twse_one(tc, args.date),
