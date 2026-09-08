@@ -25,20 +25,32 @@ membership test).
 
 from __future__ import annotations
 
-import datetime as dt
 import re
+import time
 from dataclasses import dataclass
-from zoneinfo import ZoneInfo
 
 import httpx
-from bs4 import BeautifulSoup
 
-_TW = ZoneInfo("Asia/Taipei")
 _UA = "broker-branch-tracker/1.0 (+personal research)"
 
 _TWSE_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 _TPEX_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
-_BSR_MENU_URL = "https://bsr.twse.com.tw/bshtm/bsMenu.aspx"
+
+
+def _get_json(client: httpx.Client, url: str, *, tries: int = 4):
+    """GET + parse JSON with retry/backoff. The TWSE/TPEx OpenAPI feeds
+    intermittently return a truncated body (JSONDecodeError) or a transient 5xx,
+    especially from datacenter IPs."""
+    last: Exception | None = None
+    for i in range(tries):
+        try:
+            r = client.get(url, timeout=60, headers={"User-Agent": _UA})
+            r.raise_for_status()
+            return r.json()
+        except (httpx.HTTPError, ValueError) as e:   # ValueError covers JSONDecodeError
+            last = e
+            time.sleep(1.5 * (i + 1))
+    raise last  # type: ignore[misc]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,18 +97,11 @@ def parse_tpex_daily_close(rows: list[dict]) -> list[Stock]:
 
 
 def twse_traded(client: httpx.Client) -> list[Stock]:
-    r = client.get(_TWSE_URL, timeout=60, headers={"User-Agent": _UA})
-    r.raise_for_status()
-    return parse_twse_stock_day_all(r.json())
+    return parse_twse_stock_day_all(_get_json(client, _TWSE_URL))
 
 
 def tpex_traded(client: httpx.Client) -> list[Stock]:
-    r = client.get(_TPEX_URL, timeout=60, headers={"User-Agent": _UA})
-    r.raise_for_status()
-    return parse_tpex_daily_close(r.json())
-
-
-_STOCK_DAY_ALL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+    return parse_tpex_daily_close(_get_json(client, _TPEX_URL))
 
 
 def resolved_trading_date(client: httpx.Client) -> str | None:
@@ -111,9 +116,7 @@ def resolved_trading_date(client: httpx.Client) -> str | None:
     carries a data date, which is why this uses the OpenAPI feed instead.
     """
     try:
-        r = client.get(_STOCK_DAY_ALL, timeout=60, headers={"User-Agent": _UA})
-        r.raise_for_status()
-        rows = r.json()
+        rows = _get_json(client, _TWSE_URL)
     except (httpx.HTTPError, ValueError):
         return None
     for row in rows:
