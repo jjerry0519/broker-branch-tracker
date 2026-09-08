@@ -1,34 +1,36 @@
 name: daily-ingest
 
+# TWSE (上市) leg: runs on GitHub-hosted runners — verified working.
+# TPEx (上櫃) leg: TPEx's Cloudflare edge ERR_ABORTs the GitHub Actions IP ranges,
+#   and neither warp-cli nor wgcf/WireGuard establishes a tunnel inside the runner
+#   (UDP egress blocked). So scheduled cloud runs skip TPEx (TPEX_ENABLED=0); the
+#   TPEx leg runs elsewhere (see README "TPEx hosting"). Manual dispatch can still
+#   force it on for experiments via the skip_tpex=false input.
+
 on:
   schedule:
     - cron: "0 10 * * 1-5"          # 18:00 Asia/Taipei, Mon-Fri
   workflow_dispatch:
     inputs:
       date:
-        description: "ISO date to ingest (default: today TW)"
+        description: "ISO date to ingest (default: latest published trading day)"
         required: false
         type: string
-      tpex_limit:
-        description: "Cap TPEx stocks (fast smoke test, e.g. 15). Empty = no cap."
+      skip_tpex:
+        description: "Skip the TPEx leg (default true on cloud runners — TPEx is IP-blocked here)"
         required: false
-        default: ""
-        type: string
+        default: true
+        type: boolean
       twse_limit:
         description: "Cap TWSE stocks (fast smoke test). Empty = no cap."
         required: false
         default: ""
         type: string
-      skip_tpex:
-        description: "Skip the TPEx leg entirely"
+      tpex_limit:
+        description: "Cap TPEx stocks (only meaningful with skip_tpex=false)."
         required: false
-        default: false
-        type: boolean
-      use_warp:
-        description: "Route egress through Cloudflare WARP (needed for TPEx from GH IPs)"
-        required: false
-        default: true
-        type: boolean
+        default: ""
+        type: string
 
 permissions:
   contents: write                    # commit manifest/log/reference back to this public repo
@@ -40,14 +42,13 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 120
     env:
       # Parquet assets are uploaded to the PRIVATE data repo via `gh` (reads GH_TOKEN).
       GH_REPO: jjerry0519/broker-branch-tracker-data
       GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
-      # skip_tpex input -> TPEX_ENABLED ("0" == --skip-tpex). Schedule runs: unset input -> "1".
-      TPEX_ENABLED: ${{ inputs.skip_tpex && '0' || '1' }}
-      # Empty inputs collapse to "0" so run.py's int(os.environ[...]) parse never sees "".
+      # Scheduled runs have no inputs -> skip_tpex defaults true -> TPEX_ENABLED=0.
+      TPEX_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.skip_tpex == false) && '1' || '0' }}
       TWSE_LIMIT: ${{ inputs.twse_limit || '0' }}
       TPEX_LIMIT: ${{ inputs.tpex_limit || '0' }}
     steps:
@@ -61,32 +62,11 @@ jobs:
       - name: Install Python deps
         run: pip install -r requirements.txt
 
-      - name: Install patchright Chromium
-        run: python -m patchright install --with-deps chromium
-
-      - name: Install xvfb (TpexBrowser launches headed)
-        run: sudo apt-get update && sudo apt-get install -y xvfb
-
-      - name: WARP via wgcf + wg-quick (no account) — non-GitHub egress IP for TPEx
-        if: ${{ inputs.use_warp != 'false' }}
+      - name: Install patchright Chromium (only if TPEx is on)
+        if: ${{ env.TPEX_ENABLED == '1' }}
         run: |
-          set -e
-          sudo apt-get install -y wireguard-tools resolvconf
-          WGCF_VER=2.2.29
-          curl -fsSL "https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VER}/wgcf_${WGCF_VER}_linux_amd64" -o wgcf
-          chmod +x wgcf
-          ./wgcf register --accept-tos
-          ./wgcf generate               # writes wgcf-profile.conf (AllowedIPs 0.0.0.0/0, ::/0)
-          sudo cp wgcf-profile.conf /etc/wireguard/warp.conf
-          sudo wg-quick up warp
-          for i in $(seq 1 20); do
-            t=$(curl -s --max-time 8 https://www.cloudflare.com/cdn-cgi/trace/ || true)
-            echo "$t" | grep -q "warp=on" && { echo "WARP UP:"; echo "$t" | grep -E "warp=|ip=|loc="; break; }
-            sleep 3
-          done
-          curl -s https://www.cloudflare.com/cdn-cgi/trace/ | grep -q "warp=on" \
-            && echo "egress is now via Cloudflare WARP" \
-            || { echo "::error::WARP tunnel did not come up"; exit 1; }
+          python -m patchright install --with-deps chromium
+          sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: Weekly reference refresh (Mondays only)
         run: |
@@ -99,7 +79,12 @@ jobs:
       - name: Ingest
         env:
           date: ${{ inputs.date }}
-        run: xvfb-run -a python -m ingest.run ${date:+--date $date}
+        run: |
+          if [ "$TPEX_ENABLED" = "1" ]; then
+            xvfb-run -a python -m ingest.run ${date:+--date $date}
+          else
+            python -m ingest.run ${date:+--date $date}
+          fi
 
       - name: Commit manifest / log / reference
         if: always()
