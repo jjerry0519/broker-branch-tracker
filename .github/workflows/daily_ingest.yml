@@ -1,15 +1,12 @@
-name: daily-ingest
+name: daily-ingest (manual / debug only)
 
-# TWSE (上市) leg: runs on GitHub-hosted runners — verified working.
-# TPEx (上櫃) leg: TPEx's Cloudflare edge ERR_ABORTs the GitHub Actions IP ranges,
-#   and neither warp-cli nor wgcf/WireGuard establishes a tunnel inside the runner
-#   (UDP egress blocked). So scheduled cloud runs skip TPEx (TPEX_ENABLED=0); the
-#   TPEx leg runs elsewhere (see README "TPEx hosting"). Manual dispatch can still
-#   force it on for experiments via the skip_tpex=false input.
+# NOT the production path. The daily pipeline runs on the Hugging Face Space
+# (see trigger_space.yml) because GitHub-hosted runner IPs are rate-limited by
+# TWSE BSR (~20 stocks/run before throttling) and hard-blocked by TPEx's
+# Cloudflare edge. This workflow is kept for manual, small-batch debugging via
+# workflow_dispatch (use twse_limit / tpex_limit).
 
 on:
-  schedule:
-    - cron: "0 10 * * 1-5"          # 18:00 Asia/Taipei, Mon-Fri
   workflow_dispatch:
     inputs:
       date:
