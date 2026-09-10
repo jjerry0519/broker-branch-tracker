@@ -14,20 +14,27 @@ from __future__ import annotations
 import datetime as dt
 import json
 import subprocess
+from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
-from ingest.schema import BranchFlow, flows_to_table
+from ingest.schema import BranchFlow, flows_to_table, table_to_flows
 
 __all__ = [
     "write_parquet",
     "release_tag",
     "upload_assets",
+    "download_asset",
     "asset_url",
     "prune_old_releases",
     "merge_manifest",
     "load_manifest",
     "save_manifest",
+    "read_flows",
+    "dedup_flows",
+    "LATEST_SCHEMA",
+    "write_latest",
 ]
 
 
@@ -91,9 +98,71 @@ def upload_assets(tag: str, paths: list[str], *, repo: str) -> None:
     _gh("release", "upload", tag, *paths, "--repo", repo, "--clobber")
 
 
+def download_asset(tag: str, filename: str, dest_dir: str, *, repo: str) -> str | None:
+    """Download asset ``filename`` from release ``tag`` into ``dest_dir``.
+
+    Returns the local path, or ``None`` when the release or asset does not exist
+    (a first-write for that day). Any other ``gh`` failure propagates.
+    """
+    Path(dest_dir).mkdir(parents=True, exist_ok=True)
+    out = str(Path(dest_dir) / filename)
+    try:
+        _gh("release", "download", tag, "--repo", repo,
+            "--pattern", filename, "--dir", dest_dir, "--clobber")
+    except subprocess.CalledProcessError as e:
+        blob = f"{e.stderr or ''}{e.stdout or ''}".lower()
+        if "release not found" in blob or "no assets" in blob or "not found" in blob:
+            return None
+        raise
+    return out if Path(out).exists() else None
+
+
 def asset_url(tag: str, filename: str, *, repo: str) -> str:
     """Public download URL for asset ``filename`` on release ``tag``."""
     return f"https://github.com/{repo}/releases/download/{tag}/{filename}"
+
+
+def read_flows(path: str) -> list[BranchFlow]:
+    """Load a day-partition Parquet back into ``BranchFlow`` rows."""
+    return table_to_flows(pq.read_table(path))
+
+
+def dedup_flows(flows: list[BranchFlow]) -> list[BranchFlow]:
+    """Collapse to one row per ``(date, stock_id, branch_id)`` -- the *last*
+    occurrence wins, so callers append freshly fetched rows after any rows read
+    back from the existing partition. Result is sorted by
+    ``(date, -net_shares, branch_id)`` for stable, diff-friendly files.
+    """
+    keep: dict[tuple[str, str, str], BranchFlow] = {}
+    for f in flows:
+        keep[(f.date, f.stock_id, f.branch_id)] = f
+    return sorted(keep.values(),
+                  key=lambda f: (f.date, -f.net_shares, f.branch_id))
+
+
+LATEST_SCHEMA = pa.schema([
+    ("data_date", pa.string()),
+    ("market", pa.string()),
+    ("stock_id", pa.string()),
+    ("branch_id", pa.string()),
+    ("branch_name", pa.string()),
+    ("side", pa.string()),               # "buy" (net buyer) | "sell" (net seller)
+    ("buy_lots", pa.int64()),
+    ("sell_lots", pa.int64()),
+    ("net_lots", pa.int64()),
+    ("avg_buy_cost", pa.float64()),
+    ("avg_sell_cost", pa.float64()),
+])
+
+
+def write_latest(records: list[dict], path: str) -> int:
+    """Write the daily ``zco`` top-15/15 board snapshot (overwritten each run)."""
+    cols = {f.name: [] for f in LATEST_SCHEMA}
+    for r in records:
+        for name in cols:
+            cols[name].append(r.get(name))
+    pq.write_table(pa.table(cols, schema=LATEST_SCHEMA), path, compression="snappy")
+    return len(records)
 
 
 def prune_old_releases(*, repo: str, keep_months: int = 13,

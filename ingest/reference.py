@@ -72,6 +72,26 @@ def _is_equity(code: str) -> bool:
     return len(code) == 4 and code.isdigit()
 
 
+def load_branches(path: str = "reference.db") -> list[tuple[str, str]]:
+    """``[(branch_id, branch_name), ...]`` from ``broker_branch``, id-sorted.
+
+    This is the branch axis of the daily ``(stock, branch)`` matrix. Head-office
+    rows (slot ``0``) are kept -- some brokers report under the HQ code.
+    """
+    conn = sqlite3.connect(path)
+    try:
+        rows = conn.execute(
+            "SELECT branch_id, branch_name FROM broker_branch ORDER BY branch_id"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [(str(a), str(b or "")) for a, b in rows]
+
+
+def load_branch_names(path: str = "reference.db") -> dict[str, str]:
+    return dict(load_branches(path))
+
+
 def refresh_reference_db(path: str = "reference.db") -> tuple[int, int]:
     """(Re)build ``company`` + ``broker_branch`` in ``path``; return
     ``(company_count, broker_branch_count)``.  Tables are created if missing

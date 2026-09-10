@@ -4,148 +4,172 @@ import json
 from pathlib import Path
 
 import ingest.run as run
+from ingest.djhtm_parse import Zco0Page, Zco0Row, ZcoBranchRow, ZcoPage
 from ingest.run import fetch_market, main
 from ingest.schema import BranchFlow
+from ingest.storage import read_flows
 from ingest.universe import Stock
 
 
+# --------------------------------------------------------------------------- #
+# fetch_market -- generic concurrent map
+# --------------------------------------------------------------------------- #
 def test_fetch_market_collects_and_reports_failures():
-    stocks = [Stock("2330", "台積電", "twse", 1085.0),
-              Stock("2317", "鴻海", "twse", 200.0),
-              Stock("9999", "壞股", "twse", 1.0)]
+    items = ["2330", "2317", "9999"]
 
-    def fake_fetch(s: Stock) -> list[BranchFlow]:
-        if s.stock_id == "9999":
+    def fake(sid: str) -> list[int]:
+        if sid == "9999":
             raise RuntimeError("boom")
-        return [BranchFlow("2026-09-03", "twse", s.stock_id, "9200", "凱基台北",
-                           10, 0, 10, s.close_price)]
+        return [int(sid)]
 
-    flows, failed = fetch_market(stocks, fake_fetch, workers=2)
-    assert {f.stock_id for f in flows} == {"2330", "2317"}
+    out, failed = fetch_market(items, fake, workers=2)
+    assert sorted(out) == [2317, 2330]
     assert failed == ["9999"]
 
 
 def test_fetch_market_empty():
-    flows, failed = fetch_market([], lambda s: [], workers=2)
-    assert flows == [] and failed == []
+    out, failed = fetch_market([], lambda x: [], workers=2)
+    assert out == [] and failed == []
 
 
+def test_fetch_market_custom_key():
+    items = [("2330", "9200"), ("2330", "BAD")]
+
+    def fake(it):
+        if it[1] == "BAD":
+            raise ValueError
+        return [it]
+
+    _, failed = fetch_market(items, fake, workers=2, key=lambda it: f"{it[0]}/{it[1]}")
+    assert failed == ["2330/BAD"]
+
+
+# --------------------------------------------------------------------------- #
+# _zco0_pair -- lots -> shares, drop empty days
+# --------------------------------------------------------------------------- #
+def test_zco0_pair_converts_lots_and_drops_zero_days(monkeypatch):
+    page = Zco0Page(
+        rows=[Zco0Row("2026-09-09", 10, 3, 7),
+              Zco0Row("2026-09-08", 0, 0, 0),      # dropped
+              Zco0Row("2026-09-05", 0, 4, -4)],
+        period_net_lots=3)
+    monkeypatch.setattr(run, "fetch_zco0", lambda *a, **k: page)
+    stock = Stock("2330", "台積電", "twse", 1000.0)
+
+    flows = run._zco0_pair(None, stock, "9200", "富邦-台北",
+                           "2026-09-01", "2026-09-09")
+
+    assert [f.date for f in flows] == ["2026-09-09", "2026-09-05"]
+    f0 = flows[0]
+    assert (f0.buy_shares, f0.sell_shares, f0.net_shares) == (10000, 3000, 7000)
+    assert f0.market == "twse" and f0.stock_id == "2330"
+    assert f0.branch_id == "9200" and f0.branch_name == "富邦-台北"
+    assert flows[1].net_shares == -4000
+
+
+# --------------------------------------------------------------------------- #
+# _merge_and_upload -- dedup existing + new, manifest bookkeeping (repo="")
+# --------------------------------------------------------------------------- #
+def test_merge_and_upload_local_dedups_and_indexes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    d = "2026-09-09"
+    by_date = {d: [
+        BranchFlow(d, "twse", "2330", "9200", "富邦", 5000, 1000, 4000, 0.0),
+        BranchFlow(d, "twse", "2330", "9200", "富邦", 7000, 0, 7000, 0.0),  # newer dup
+        BranchFlow(d, "twse", "2317", "1440", "美林", 2000, 0, 2000, 0.0),
+    ]}
+    manifest = {"days": {}}
+
+    counts = run._merge_and_upload(by_date, repo="", manifest=manifest)
+
+    assert counts == {d: 2}                       # dup collapsed
+    rows = read_flows(str(tmp_path / "out" / f"{d}.parquet"))
+    pair = next(r for r in rows if r.stock_id == "2330")
+    assert pair.net_shares == 7000               # last write won
+    assert d in manifest["days"]
+    assert manifest["days"][d]["rows"]["flows"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# main -- guard / skip
+# --------------------------------------------------------------------------- #
 def _read_log(tmp_path: Path) -> list[dict]:
     p = tmp_path / "logs" / "ingest_log.jsonl"
-    if not p.exists():
-        return []
-    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln]
-
-
-def _guard_traps(monkeypatch, wrote):
-    """Booby-trap everything past the guard so a skip is proven, not assumed."""
-    monkeypatch.setattr(run, "twse_traded", lambda c: (_ for _ in ()).throw(
-        AssertionError("universe must not be built past the guard")))
-    monkeypatch.setattr(run, "tpex_traded", lambda c: [])
-    monkeypatch.setattr(run, "fetch_market", lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("fetch_market must not run past the guard")))
-    monkeypatch.setattr(run, "write_parquet", lambda *a, **k: wrote.append(a) or 0)
-    monkeypatch.setattr(run, "upload_assets", lambda *a, **k: None)
-    monkeypatch.setattr(run, "prune_old_releases", lambda *a, **k: None)
-    monkeypatch.setattr(run, "TpexBrowser", lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("TpexBrowser must not be constructed")))
+    return ([json.loads(x) for x in p.read_text(encoding="utf-8").splitlines() if x]
+            if p.exists() else [])
 
 
 def test_main_skips_when_trading_date_unresolvable(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    wrote: list = []
     monkeypatch.setattr(run, "resolved_trading_date", lambda c: None)
-    _guard_traps(monkeypatch, wrote)
+    monkeypatch.setattr(run, "_universe", lambda skip: (_ for _ in ()).throw(
+        AssertionError("must not build universe past the guard")))
 
-    rc = main([])
-
-    assert rc == 0
-    assert wrote == []
-    rows = _read_log(tmp_path)
-    assert len(rows) == 1 and rows[0]["status"] == "skipped"
+    assert main([]) == 0
+    log = _read_log(tmp_path)
+    assert len(log) == 1 and log[0]["status"] == "skipped"
     assert not (tmp_path / "manifest.json").exists()
 
 
-def test_main_skips_when_date_already_ingested(tmp_path, monkeypatch):
+def test_main_skips_when_already_ingested(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    wrote: list = []
-    (tmp_path / "manifest.json").write_text(
-        json.dumps({"days": {"2026-09-04": {"rows": {"twse": 1}}}}), encoding="utf-8")
-    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-04")
-    _guard_traps(monkeypatch, wrote)
+    (tmp_path / "manifest.json").write_text(json.dumps(
+        {"days": {"2026-09-09": {"sweep_done": True}}}), encoding="utf-8")
+    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-09")
+    monkeypatch.setattr(run, "_universe", lambda skip: (_ for _ in ()).throw(
+        AssertionError("must not run past the skip")))
 
-    rc = main([])
-
-    assert rc == 0
-    assert wrote == []
-    rows = _read_log(tmp_path)
-    assert len(rows) == 1
-    assert rows[0]["status"] == "skipped" and rows[0]["date"] == "2026-09-04"
-    assert rows[0]["note"] == "already ingested"
+    assert main([]) == 0
+    log = _read_log(tmp_path)
+    assert log[-1]["status"] == "skipped" and log[-1]["note"] == "already ingested"
 
 
-def test_main_force_reingests_known_date(tmp_path, monkeypatch):
+# --------------------------------------------------------------------------- #
+# main -- daily happy path (fully stubbed network)
+# --------------------------------------------------------------------------- #
+def test_main_daily_happy_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "manifest.json").write_text(
-        json.dumps({"days": {"2026-09-04": {"rows": {"twse": 1}}}}), encoding="utf-8")
-    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-04")
-    monkeypatch.setattr(run, "twse_traded",
-                        lambda c: [Stock("2330", "台積電", "twse", 1085.0)])
-    monkeypatch.setattr(run, "tpex_traded", lambda c: [])
-    monkeypatch.setattr(run, "fetch_market", lambda s, fn, **k: (
-        [BranchFlow("2026-09-04", "twse", "2330", "9200", "凱基", 10, 0, 10, 1.0)], []))
-    monkeypatch.setattr(run, "write_parquet", lambda flows, path: len(list(flows)))
-    monkeypatch.setattr(run, "upload_assets", lambda *a, **k: None)
-    monkeypatch.setattr(run, "prune_old_releases", lambda *a, **k: None)
+    stocks = [Stock("2330", "台積電", "twse", 1000.0),
+              Stock("6488", "環球晶", "tpex", 900.0)]
 
-    rc = main(["--skip-tpex", "--repo", "", "--force"])
+    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-09")
+    monkeypatch.setattr(run, "_universe", lambda skip: stocks)
+    monkeypatch.setattr(run, "load_branches",
+                        lambda *a, **k: [("9200", "富邦-台北"), ("1440", "美林")])
+    monkeypatch.setattr(run, "new_client", lambda *a, **k: _NoClient())
 
+    zco_page = ZcoPage("X", "2026-09-09",
+                       branches=[ZcoBranchRow("富邦-台北", 10, 2, 8),
+                                 ZcoBranchRow("美林", 1, 9, -8)],
+                       avg_buy_cost=999.0, avg_sell_cost=998.0)
+    monkeypatch.setattr(run, "fetch_zco", lambda c, sid, **k: zco_page)
+
+    def fake_zco0(c, sid, bid, d_from, d_to, **k):
+        return Zco0Page(rows=[Zco0Row("2026-09-09", 4, 1, 3)], period_net_lots=3)
+    monkeypatch.setattr(run, "fetch_zco0", fake_zco0)
+
+    rc = main(["--repo", "", "--cycle-days", "20", "--workers", "2"])
     assert rc == 0
-    rows = _read_log(tmp_path)
-    assert any(r["status"] == "ok" and r["market"] == "twse" for r in rows)
+
+    # zco sweep -> latest.parquet
+    assert (tmp_path / "out" / "latest.parquet").exists()
+    # rolling shard (size ceil(2/20)=1 stock) -> one day partition
+    day = read_flows(str(tmp_path / "out" / "2026-09-09.parquet"))
+    assert day and all(r.date == "2026-09-09" for r in day)
+    assert day[0].buy_shares == 4000                 # 4 張 -> shares
+
+    # state advanced for the shard stock only
+    state = json.loads((tmp_path / "refresh_state.json").read_text("utf-8"))
+    assert list(state["refreshed_through"].values()) == ["2026-09-09"]
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text("utf-8"))
+    assert manifest["days"]["2026-09-09"]["sweep_done"] is True
+
+    log = _read_log(tmp_path)
+    assert any(r.get("leg") == "sweep" and r["status"] == "ok" for r in log)
+    assert any(r.get("leg") == "shard" and r["status"] == "ok" for r in log)
 
 
-def test_main_happy_path_skip_tpex(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    wrote: list = []
-    built: list = []
-
-    stocks = [Stock("2330", "台積電", "twse", 1085.0),
-              Stock("2317", "鴻海", "twse", 200.0)]
-    flow = BranchFlow("2026-09-03", "twse", "2330", "9200", "凱基台北",
-                      3000, 500, 2500, 1085.0)
-
-    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-03")
-    monkeypatch.setattr(run, "twse_traded", lambda c: stocks)
-    monkeypatch.setattr(run, "tpex_traded", lambda c: (_ for _ in ()).throw(
-        AssertionError("tpex_traded must not run with --skip-tpex")))
-    monkeypatch.setattr(run, "fetch_market",
-                        lambda s, fn, **k: ([flow], []))
-
-    def fake_write(flows, path):
-        wrote.append((path, list(flows)))
-        return len(flows)
-
-    monkeypatch.setattr(run, "write_parquet", fake_write)
-    monkeypatch.setattr(run, "upload_assets", lambda *a, **k: None)
-    monkeypatch.setattr(run, "prune_old_releases", lambda *a, **k: None)
-    monkeypatch.setattr(run, "TpexBrowser",
-                        lambda *a, **k: built.append(a) or (_ for _ in ()).throw(
-                            AssertionError("TpexBrowser must not be constructed")))
-
-    rc = main(["--date", "2026-09-03", "--skip-tpex", "--repo", ""])
-
-    assert rc == 0
-    assert len(wrote) == 1                                  # twse only
-    assert wrote[0][0].endswith("2026-09-03_twse.parquet")
-    assert built == []                                      # TpexBrowser never built
-
-    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
-    assert "2026-09-03" in manifest["days"]
-    assert manifest["days"]["2026-09-03"]["rows"]["twse"] == 1
-
-    rows = _read_log(tmp_path)
-    assert len(rows) == 1
-    assert rows[0]["status"] == "ok"
-    assert rows[0]["market"] == "twse"
-    assert rows[0]["row_count"] == 1
+class _NoClient:
+    def close(self):
+        pass

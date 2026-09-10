@@ -1,18 +1,22 @@
-"""Daily pipeline orchestrator.
+"""Daily pipeline -- Architecture A over the SysJust ``.djhtm`` mirrors.
 
-Ties the whole ingest together:
+Plain HTTP, no browser, no CAPTCHA. One run does:
 
-1. ``resolved_trading_date`` guard -- if the BSR site is not showing the target
-   date (weekend / holiday / not-yet-published) log a ``skipped`` row and exit 0.
-2. Build the traded universe (TWSE + TPEx OpenAPI).
-3. TWSE leg: concurrent BSR fetch (``ThreadPoolExecutor``), aggregate to
-   ``BranchFlow`` rows, write + upload the ``<date>_twse.parquet`` asset.
-4. TPEx leg (unless skipped): sequential fetch through one shared headed
-   ``TpexBrowser`` (``workers=1`` -- the browser owns a single page), write +
-   upload the ``<date>_tpex.parquet`` asset.
-5. Prune releases outside the 13-month window and persist ``manifest.json``.
+1. **Guard** -- resolve the latest published trading day (TWSE ``STOCK_DAY_ALL``
+   ``Date``). Skip (rc 0, logged) if unresolvable.
+2. **zco sweep** -- one ``zco.djhtm`` per stock -> that day's top-15 buyers /
+   top-15 sellers -> ``latest.parquet`` (overwritten; the web app's "today"
+   layer, always same-day for the 30 biggest players per stock).
+3. **Rolling zco0 shard** -- ``schedule.next_shard`` picks 1/``cycle_days`` of the
+   market; for each of those stocks, one ``zco0`` *range* request per branch in
+   ``reference.db`` over ``[refreshed_through+1 .. target]``. Rows (張 x 1000 ->
+   shares) are merged into each affected ``<date>.parquet`` day-partition and
+   re-uploaded. ``mark_done`` advances those stocks to ``target``.
+4. **Retention / manifest** -- prune releases outside 13 months; persist the
+   manifest and ``refresh_state.json``.
 
-One ``ingest_log`` row per market is appended to ``logs/ingest_log.jsonl``.
+``--mode backfill`` runs step 3 only with a 15-month window and ``--shard i/N``
+to split the one-time ~1.7M-cell first fill across dispatched runs.
 """
 from __future__ import annotations
 
@@ -21,66 +25,54 @@ import datetime as dt
 import json
 import os
 import sys
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable
-from zoneinfo import ZoneInfo
+from typing import Callable, TypeVar
 
 import httpx
 
-from ingest.aggregate import aggregate
+from ingest.djhtm_client import fetch_zco, fetch_zco0, new_client
+from ingest.reference import load_branches
+from ingest.schedule import (load_state, mark_done, next_shard, save_state,
+                             window_for)
 from ingest.schema import BranchFlow
-from ingest.storage import (asset_url, load_manifest, merge_manifest,
-                            prune_old_releases, release_tag, save_manifest,
-                            upload_assets, write_parquet)
-from ingest.twse_client import fetch_stock as twse_fetch, new_client as twse_new
-from ingest.tpex_client import TpexBrowser
-from ingest.universe import Stock, resolved_trading_date, tpex_traded, twse_traded
+from ingest.storage import (asset_url, dedup_flows, download_asset, load_manifest,
+                            merge_manifest, prune_old_releases, read_flows,
+                            release_tag, save_manifest, upload_assets,
+                            write_latest, write_parquet)
+from ingest.universe import (Stock, resolved_trading_date, tpex_traded,
+                             twse_traded)
 
-_TW = ZoneInfo("Asia/Taipei")
 _LOG = Path("logs/ingest_log.jsonl")
+_WORK = Path("out")
+_LOTS = 1000                              # 1 張 = 1000 shares
+
+T = TypeVar("T")
+R = TypeVar("R")
 
 
-def fetch_market(stocks: list[Stock],
-                 fetch_one: Callable[[Stock], list[BranchFlow]],
-                 *, workers: int = 8) -> tuple[list[BranchFlow], list[str]]:
-    """Concurrently map ``fetch_one`` over ``stocks``.
-
-    Returns ``(all_flows, failed_stock_ids)``. An exception from ``fetch_one``
-    for a stock is not fatal -- that ``stock_id`` lands in ``failed`` (sorted).
+# --------------------------------------------------------------------------- #
+# generic concurrent map with per-item failure capture
+# --------------------------------------------------------------------------- #
+def fetch_market(items: list[T], fetch_one: Callable[[T], list[R]], *,
+                 workers: int = 8,
+                 key: Callable[[T], str] = str) -> tuple[list[R], list[str]]:
+    """Map ``fetch_one`` over ``items`` on a thread pool. Returns
+    ``(flattened_results, failed_keys_sorted)``; an exception for one item is
+    non-fatal and lands its ``key`` in ``failed``.
     """
-    flows: list[BranchFlow] = []
+    out: list[R] = []
     failed: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(fetch_one, s): s for s in stocks}
-        for fut, s in futs.items():
+        futs = {pool.submit(fetch_one, it): it for it in items}
+        for fut, it in futs.items():
             try:
-                flows.extend(fut.result())
+                out.extend(fut.result())
             except Exception:
-                failed.append(s.stock_id)
+                failed.append(key(it))
     failed.sort()
-    return flows, failed
-
-
-def _twse_one(client, date_iso):
-    def inner(s: Stock) -> list[BranchFlow]:
-        page = twse_fetch(client, s.stock_id, max_attempts=30)
-        # BsrPage has no close price / date -> always from universe.Stock
-        return aggregate(page.rows, date=date_iso, market="twse",
-                         stock_id=s.stock_id, close_price=s.close_price)
-    return inner
-
-
-def _tpex_one(browser: TpexBrowser, date_iso):
-    # NOTE: one shared headed browser, one page, token-per-request -> MUST run
-    # sequentially (fetch_market with workers=1). browser.fetch_stock already
-    # reloads once on TpexRetry.
-    def inner(s: Stock) -> list[BranchFlow]:
-        page = browser.fetch_stock(s.stock_id)
-        close = page.close_price or s.close_price   # brokerBS carries close; fall back
-        return aggregate(page.rows, date=date_iso, market="tpex",
-                         stock_id=s.stock_id, close_price=close)
-    return inner
+    return out, failed
 
 
 def _append_log(rec: dict) -> None:
@@ -89,65 +81,229 @@ def _append_log(rec: dict) -> None:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+def _now() -> str:
+    return dt.datetime.now(dt.UTC).isoformat()
+
+
+# --------------------------------------------------------------------------- #
+# zco0 rolling shard
+# --------------------------------------------------------------------------- #
+def _zco0_pair(client: httpx.Client, stock: Stock, branch_id: str,
+               branch_name: str, d_from: str, d_to: str) -> list[BranchFlow]:
+    """One ``(stock, branch)`` pair -> ``BranchFlow`` rows for its active days in
+    ``[d_from, d_to]``. All-zero days are dropped. Close price is left 0.0 here
+    (joined per-day by the web app / a later close backfill)."""
+    page = fetch_zco0(client, stock.stock_id, branch_id, d_from, d_to)
+    rows: list[BranchFlow] = []
+    for r in page.rows:
+        if not (r.buy_lots or r.sell_lots):
+            continue
+        rows.append(BranchFlow(
+            date=r.date, market=stock.market, stock_id=stock.stock_id,
+            branch_id=branch_id, branch_name=branch_name,
+            buy_shares=r.buy_lots * _LOTS, sell_shares=r.sell_lots * _LOTS,
+            net_shares=r.net_lots * _LOTS, close_price=0.0))
+    return rows
+
+
+def _run_shard(client: httpx.Client, shard: list[Stock], branches: list[tuple[str, str]],
+               state: dict[str, str], *, target: str, max_lookback: int,
+               workers: int) -> tuple[dict[str, list[BranchFlow]], list[str]]:
+    """Fetch every branch for every stock in ``shard``. Returns
+    ``({date: [flows]}, failed_stock_ids)``."""
+    by_date: dict[str, list[BranchFlow]] = defaultdict(list)
+    failed: list[str] = []
+    for stock in shard:
+        d_from, d_to = window_for(stock.stock_id, state, target=target,
+                                  max_lookback_days=max_lookback)
+        if d_from > d_to:
+            continue
+        pair_items = [(bid, bname) for bid, bname in branches]
+
+        def one(item: tuple[str, str], _s=stock, _f=d_from, _t=d_to) -> list[BranchFlow]:
+            return _zco0_pair(client, _s, item[0], item[1], _f, _t)
+
+        flows, bad = fetch_market(pair_items, one, workers=workers,
+                                  key=lambda it: f"{stock.stock_id}/{it[0]}")
+        for f in flows:
+            by_date[f.date].append(f)
+        if bad:
+            failed.append(stock.stock_id)
+    failed.sort()
+    return by_date, failed
+
+
+def _merge_and_upload(by_date: dict[str, list[BranchFlow]], *, repo: str,
+                      manifest: dict) -> dict[str, int]:
+    """For each affected date: download the existing ``<date>.parquet`` (if any),
+    append the new flows, dedup, rewrite, upload. Returns ``{date: row_count}``.
+    """
+    _WORK.mkdir(exist_ok=True)
+    counts: dict[str, int] = {}
+    for date_iso, new_flows in sorted(by_date.items()):
+        fname = f"{date_iso}.parquet"
+        path = str(_WORK / fname)
+        tag = release_tag(date_iso)
+        existing: list[BranchFlow] = []
+        if repo:
+            got = download_asset(tag, fname, str(_WORK), repo=repo)
+            if got:
+                existing = read_flows(got)
+        merged = dedup_flows(existing + new_flows)
+        n = write_parquet(merged, path)
+        counts[date_iso] = n
+        if repo:
+            upload_assets(tag, [path], repo=repo)
+            url = asset_url(tag, fname, repo=repo)
+        else:
+            url = path
+        entry = manifest.get("days", {}).get(date_iso, {})
+        entry["flows"] = url
+        entry.setdefault("rows", {})["flows"] = n
+        manifest.update(merge_manifest(manifest, date_iso, entry))
+    return counts
+
+
+# --------------------------------------------------------------------------- #
+# zco sweep (top-15 / top-15 board for `target`)
+# --------------------------------------------------------------------------- #
+def _zco_sweep(client: httpx.Client, stocks: list[Stock],
+               name_map: dict[str, str], *, workers: int
+               ) -> tuple[list[dict], list[str]]:
+    def one(stock: Stock) -> list[dict]:
+        page = fetch_zco(client, stock.stock_id)
+        recs: list[dict] = []
+        for b in page.branches:
+            recs.append({
+                "data_date": page.data_date, "market": stock.market,
+                "stock_id": stock.stock_id, "branch_id": "",
+                "branch_name": b.branch_name,
+                "side": "buy" if b.net_lots >= 0 else "sell",
+                "buy_lots": b.buy_lots, "sell_lots": b.sell_lots,
+                "net_lots": b.net_lots,
+                "avg_buy_cost": page.avg_buy_cost, "avg_sell_cost": page.avg_sell_cost,
+            })
+        return recs
+
+    return fetch_market(stocks, one, workers=workers, key=lambda s: s.stock_id)
+
+
+# --------------------------------------------------------------------------- #
+# entry point
+# --------------------------------------------------------------------------- #
+def _universe(skip_tpex: bool) -> list[Stock]:
+    with httpx.Client() as uc:
+        stocks = twse_traded(uc)
+        if not skip_tpex:
+            stocks = stocks + tpex_traded(uc)
+    return stocks
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--date", default="")   # empty -> use the resolved latest trading date
+    ap.add_argument("--mode", choices=("daily", "backfill"), default="daily")
+    ap.add_argument("--date", default="")
     ap.add_argument("--repo", default=os.environ.get("GH_REPO", ""))
     ap.add_argument("--skip-tpex", action="store_true",
                     default=os.environ.get("TPEX_ENABLED", "1") == "0")
+    ap.add_argument("--skip-sweep", action="store_true",
+                    help="daily mode: skip the zco top-15/15 board sweep")
     ap.add_argument("--force", action="store_true",
-                    help="ingest even if this date is already in the manifest")
-    ap.add_argument("--workers", type=int, default=8)
-    ap.add_argument("--twse-limit", type=int,
-                    default=int(os.environ.get("TWSE_LIMIT", "0")))
-    ap.add_argument("--tpex-limit", type=int,
-                    default=int(os.environ.get("TPEX_LIMIT", "0")))
+                    help="daily mode: re-run even if target is already in the manifest")
+    ap.add_argument("--cycle-days", type=int,
+                    default=int(os.environ.get("CYCLE_DAYS", "20")))
+    ap.add_argument("--max-lookback", type=int, default=45)
+    ap.add_argument("--months", type=int, default=15,
+                    help="backfill mode: how far back the window reaches")
+    ap.add_argument("--shard", default="",
+                    help='backfill mode: "i/N" -- process only the i-th of N '
+                         "stock slices (1-based)")
+    ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--stock-limit", type=int,
+                    default=int(os.environ.get("STOCK_LIMIT", "0")))
     args = ap.parse_args(argv)
-    started = dt.datetime.now(dt.UTC).isoformat()
+    started = _now()
 
     with httpx.Client() as probe:
         target = resolved_trading_date(probe)
     if target is None:
-        _append_log({"date": args.date or "?", "market": "*", "status": "skipped",
+        _append_log({"date": args.date or "?", "mode": args.mode, "status": "skipped",
                      "note": "could not resolve latest trading date",
-                     "started_at": started,
-                     "finished_at": dt.datetime.now(dt.UTC).isoformat()})
+                     "started_at": started, "finished_at": _now()})
         print("could not resolve latest trading date (STOCK_DAY_ALL); skip")
         return 0
-    if args.date and args.date != target:
-        # cannot backfill: the sources only serve the latest trading day
-        print(f"requested --date {args.date} != latest published {target}; ignoring, using {target}")
-    args.date = target
+    if args.date and args.date != target and args.mode == "daily":
+        print(f"--date {args.date} != latest published {target}; using {target}")
+    if args.date and args.mode == "backfill":
+        target = args.date
 
     manifest = load_manifest()
-    if not args.force and target in manifest.get("days", {}):
-        _append_log({"date": target, "market": "*", "status": "skipped",
+    if (args.mode == "daily" and not args.force
+            and target in manifest.get("days", {})
+            and manifest["days"][target].get("sweep_done")):
+        _append_log({"date": target, "mode": "daily", "status": "skipped",
                      "note": "already ingested", "started_at": started,
-                     "finished_at": dt.datetime.now(dt.UTC).isoformat()})
-        print(f"{target} already ingested; skip (use --force to re-run)")
+                     "finished_at": _now()})
+        print(f"{target} already ingested; skip (use --force)")
         return 0
 
-    with httpx.Client() as uc:
-        twse_stocks = twse_traded(uc)
-        tpex_stocks = [] if args.skip_tpex else tpex_traded(uc)
-    if args.twse_limit > 0:
-        twse_stocks = twse_stocks[:args.twse_limit]
-    if args.tpex_limit > 0:
-        tpex_stocks = tpex_stocks[:args.tpex_limit]
+    stocks = _universe(args.skip_tpex)
+    if args.stock_limit > 0:
+        stocks = stocks[:args.stock_limit]
+    name_map = dict(load_branches())
+    branches = load_branches()
 
-    all_flows: dict[str, list[BranchFlow]] = {"twse": [], "tpex": []}
+    client = new_client()
+    try:
+        # ---- zco sweep -------------------------------------------------------
+        if args.mode == "daily" and not args.skip_sweep:
+            recs, sweep_failed = _zco_sweep(client, stocks, name_map,
+                                            workers=args.workers)
+            _WORK.mkdir(exist_ok=True)
+            latest_path = str(_WORK / "latest.parquet")
+            n_latest = write_latest(recs, latest_path)
+            if args.repo:
+                upload_assets("meta", [latest_path], repo=args.repo)
+            _append_log({"date": target, "mode": "daily", "leg": "sweep",
+                         "status": "ok" if not sweep_failed else "partial",
+                         "stock_count": len(stocks), "row_count": n_latest,
+                         "failed": sweep_failed, "started_at": started,
+                         "finished_at": _now()})
 
-    with twse_new() as tc:
-        flows, failed = fetch_market(twse_stocks, _twse_one(tc, args.date),
-                                     workers=args.workers)
-    all_flows["twse"] = flows
-    _write_upload("twse", flows, failed, twse_stocks, args, started, manifest)
+        # ---- rolling / backfill zco0 shard --------------------------------- #
+        state = load_state()
+        if args.mode == "backfill":
+            lookback = args.months * 31
+            shard = _apply_shard(stocks, args.shard)
+            legname = f"backfill{args.shard or ''}"
+        else:
+            lookback = args.max_lookback
+            shard = [s for s in stocks
+                     if s.stock_id in set(next_shard(
+                         [x.stock_id for x in stocks], state,
+                         cycle_days=args.cycle_days))]
+            legname = "shard"
 
-    if not args.skip_tpex:
-        with TpexBrowser() as br:                       # headed; sequential (workers=1)
-            flows, failed = fetch_market(tpex_stocks, _tpex_one(br, args.date), workers=1)
-        all_flows["tpex"] = flows
-        _write_upload("tpex", flows, failed, tpex_stocks, args, started, manifest)
+        by_date, shard_failed = _run_shard(
+            client, shard, branches, state, target=target,
+            max_lookback=lookback, workers=args.workers)
+        counts = _merge_and_upload(by_date, repo=args.repo, manifest=manifest)
+
+        state = mark_done(state, [s.stock_id for s in shard], target)
+        save_state(state)
+
+        _append_log({"date": target, "mode": args.mode, "leg": legname,
+                     "status": "ok" if not shard_failed else "partial",
+                     "shard_stocks": len(shard), "dates_written": len(counts),
+                     "row_count": sum(counts.values()), "failed": shard_failed,
+                     "started_at": started, "finished_at": _now()})
+    finally:
+        client.close()
+
+    if args.mode == "daily":
+        entry = manifest.get("days", {}).get(target, {})
+        entry["sweep_done"] = not args.skip_sweep
+        manifest.update(merge_manifest(manifest, target, entry))
 
     if args.repo:
         prune_old_releases(repo=args.repo)
@@ -155,27 +311,14 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _write_upload(market, flows, failed, stocks, args, started, manifest):
-    fname = f"{args.date}_{market}.parquet"
-    path = str(Path("out") / fname)
-    Path("out").mkdir(exist_ok=True)
-    n = write_parquet(flows, path)
-    tag = release_tag(args.date)
-    if args.repo:
-        upload_assets(tag, [path], repo=args.repo)
-        url = asset_url(tag, fname, repo=args.repo)
-    else:
-        url = path
-    entry = manifest.get("days", {}).get(args.date, {})
-    entry[market] = url
-    entry.setdefault("rows", {})
-    entry["rows"][market] = n
-    manifest.update(merge_manifest(manifest, args.date, entry))
-    status = "ok" if not failed else "partial"
-    _append_log({"date": args.date, "market": market, "status": status,
-                 "stock_count": len(stocks), "row_count": n,
-                 "failed": failed, "started_at": started,
-                 "finished_at": dt.datetime.now(dt.UTC).isoformat()})
+def _apply_shard(stocks: list[Stock], spec: str) -> list[Stock]:
+    """``spec`` == ``"i/N"`` -> the i-th (1-based) contiguous slice of ``stocks``."""
+    if not spec:
+        return stocks
+    i, n = (int(x) for x in spec.split("/"))
+    per = max(1, -(-len(stocks) // n))
+    lo = (i - 1) * per
+    return stocks[lo:lo + per]
 
 
 if __name__ == "__main__":
