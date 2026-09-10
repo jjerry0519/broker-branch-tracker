@@ -1,8 +1,31 @@
 # 台股分點籌碼追蹤 — 設計文件
 
-- 日期：2026-09-03
-- 狀態：已與需求方確認，待寫實作計畫
-- 目標 repo：`jjerry0519/broker-branch-tracker`（private，新建）
+- 日期：2026-09-03（v1）／2026-09-10（v2 架構變更）
+- 狀態：v2 已與需求方確認並實作中
+- 目標 repo：`jjerry0519/broker-branch-tracker`（public，程式碼）＋ `jjerry0519/broker-branch-tracker-data`（private，資料）
+
+---
+
+## v2 — 架構變更（2026-09-10）
+
+**為什麼變**：v1 的官方來源（TWSE BSR、TPEx brokerBS）在 GitHub-Actions runner IP 上都跑不動 —— BSR 每個 IP 約 20 檔就被限速，TPEx 的 Cloudflare 邊緣直接封鎖整個 GitHub ASN。HF Docker Space 改成要付費方案。所有「免費＋不綁卡＋不開電腦」的方案逐一失敗。
+
+**新來源**：SysJust `.djhtm` 聚合器（MoneyDJ／富邦 e 財網等數十個券商白牌鏡像），純 Microsoft-IIS、無 Cloudflare、無登入、無驗證碼，`httpx` 直接抓，且**從 GitHub runner IP 實測可通**（富邦鏡像 8/8）。
+
+| 端點 | 回傳 | 用途 |
+|---|---|---|
+| `zco0.djhtm?A=<股>&BHID=<分點>&b=<分點>&C=1&D=<起>&E=<迄>` | 該（股×分點）**逐日** 買/賣/買賣超（張），一次請求涵蓋任意日期範圍、可回溯 ~15 個月，含 `期間累計` 檢查碼 | 權威每日資料、歷史回補、功能 2/3 |
+| `zco.djhtm?a=<股>` | 最新一日 前 15 買 + 前 15 賣（分點中文名、無代號）＋ 站方自算均價成本 | 每日榜單掃描、功能 1 排行 |
+
+**Architecture A（需求方選定）**：私有庫落地**完整** 全市場 × 全分點 × 逐日矩陣，不做 Top-N 裁切。因矩陣達 ~167 萬（股×分點）格、實測幾乎無「死組合」，改用 **20 天滾動分片**：每日只重抓 1/20 的股票（各 ~880 分點），但因 `zco0` 是區間查詢，一次補滿距上次以來每一個交易日、零缺口；最冷門格子的「最新一天」最多延遲 20 天，熱門部分由每日 `zco` 榜單掃描即時補上，且網頁層在使用者查詢時對過期格子即時補抓（1–2 秒）。
+
+**資料主權**：抓進私有 `broker-branch-tracker-data`（Parquet／Releases），網頁只讀我們的庫。任一鏡像若封鎖，保留全部已累積歷史、切換其他鏡像續抓新日。
+
+**單位**：`.djhtm` 以「張」計；落地時 × 1000 存為股數，`schema.BranchFlow` 欄位不變。`close_price` 僅當日 leg 有值，歷史列為 0.0（FIFO 頁面查詢時另接收盤價來源補齊）。
+
+**模組**：`ingest/djhtm_parse.py`、`ingest/djhtm_client.py`（多鏡像 failover）、`ingest/schedule.py`（滾動分片純函式）、`ingest/run.py`（`--mode daily|backfill`）。v1 的 BSR/Turnstile 實作移至 `fallback/`，保留為鏡像全滅時的備援路徑。
+
+以下 §2 起為 v1 內容，來源調查與 `fallback/` 實作仍以其為準。
 
 ---
 

@@ -1,5 +1,11 @@
 # 台股分點籌碼追蹤 — 抓取與儲存管線 Implementation Plan
 
+> **狀態（2026-09-10）：本計畫的 Task 1–14 已完成並綠燈，但其官方來源路徑（TWSE BSR 驗證碼、TPEx Turnstile）在 GitHub-Actions IP 上無法運作。**已改採 SysJust `.djhtm` 聚合器 + Architecture A（20 天滾動分片），詳見設計文件 §「v2 — 架構變更」。實作對應：
+> - `ingest/djhtm_parse.py`、`ingest/djhtm_client.py`、`ingest/schedule.py`、`ingest/run.py`（`--mode daily|backfill`）、`ingest/storage.py`（`download_asset`/`read_flows`/`dedup_flows`/`write_latest`）、`ingest/reference.py`（`load_branches`）
+> - `.github/workflows/daily_ingest.yml`（每日 cron，純 httpx）、`.github/workflows/backfill.yml`（一次性 15 個月回補，`--shard i/N`）
+> - v1 的 `twse_*`/`tpex_*`/`captcha`/`aggregate` 及其測試移至 `fallback/`、`tests/fallback/`，僅在鏡像全滅時啟用
+> 下方 Task 1–14 內容保留為 `fallback/` 路徑的實作紀錄。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 每交易日盤後自動抓取 TWSE + TPEx 全市場、全分點的券商買賣明細，彙整為每日 Parquet，存入私有 GitHub Releases，滾動保留 13 個月。
