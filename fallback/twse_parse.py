@@ -5,7 +5,7 @@ import io
 import re
 from dataclasses import dataclass
 
-from ingest.aggregate import RawRow
+from fallback.aggregate import RawRow
 
 
 @dataclass(frozen=True, slots=True)

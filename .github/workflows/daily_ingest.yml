@@ -1,36 +1,30 @@
-name: daily-ingest (manual / debug only)
+name: daily-ingest
 
-# NOT the production path. The daily pipeline runs on the Hugging Face Space
-# (see trigger_space.yml) because GitHub-hosted runner IPs are rate-limited by
-# TWSE BSR (~20 stocks/run before throttling) and hard-blocked by TPEx's
-# Cloudflare edge. This workflow is kept for manual, small-batch debugging via
-# workflow_dispatch (use twse_limit / tpex_limit).
+# Architecture A over the SysJust .djhtm mirrors -- plain HTTP, no browser.
+# Per run: zco top-15/15 sweep (every stock, same day) + one 1/CYCLE_DAYS
+# rolling zco0 shard (full history for its slice of the stock x branch matrix).
+# The PC does not need to be on -- this is the whole pipeline.
 
 on:
+  schedule:
+    - cron: "30 10 * * 1-5"        # 18:30 Asia/Taipei, Mon-Fri
   workflow_dispatch:
     inputs:
-      date:
-        description: "ISO date to ingest (default: latest published trading day)"
-        required: false
-        type: string
-      skip_tpex:
-        description: "Skip the TPEx leg (default true on cloud runners — TPEx is IP-blocked here)"
-        required: false
-        default: true
+      force:
+        description: "Re-run even if today is already marked done"
         type: boolean
-      twse_limit:
-        description: "Cap TWSE stocks (fast smoke test). Empty = no cap."
-        required: false
-        default: ""
+        default: false
+      skip_sweep:
+        description: "Skip the zco top-15/15 board sweep"
+        type: boolean
+        default: false
+      stock_limit:
+        description: "Cap the universe (smoke test). 0 = no cap."
         type: string
-      tpex_limit:
-        description: "Cap TPEx stocks (only meaningful with skip_tpex=false)."
-        required: false
-        default: ""
-        type: string
+        default: "0"
 
 permissions:
-  contents: write                    # commit manifest/log/reference back to this public repo
+  contents: write
 
 concurrency:
   group: daily-ingest
@@ -39,15 +33,12 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
-      # Parquet assets are uploaded to the PRIVATE data repo via `gh` (reads GH_TOKEN).
       GH_REPO: jjerry0519/broker-branch-tracker-data
       GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
-      # Scheduled runs have no inputs -> skip_tpex defaults true -> TPEX_ENABLED=0.
-      TPEX_ENABLED: ${{ (github.event_name == 'workflow_dispatch' && inputs.skip_tpex == false) && '1' || '0' }}
-      TWSE_LIMIT: ${{ inputs.twse_limit || '0' }}
-      TPEX_LIMIT: ${{ inputs.tpex_limit || '0' }}
+      CYCLE_DAYS: "20"
+      STOCK_LIMIT: ${{ inputs.stock_limit || '0' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -56,42 +47,32 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      - name: Install Python deps
-        run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      - name: Install patchright Chromium (only if TPEx is on)
-        if: ${{ env.TPEX_ENABLED == '1' }}
-        run: |
-          python -m patchright install --with-deps chromium
-          sudo apt-get update && sudo apt-get install -y xvfb
-
-      - name: Weekly reference refresh (Mondays only)
+      - name: Weekly reference refresh (Mondays)
         run: |
           if [ "$(date -u +%u)" = "1" ]; then
             python -c "from ingest.reference import refresh_reference_db; print(refresh_reference_db())"
           else
-            echo "not Monday (UTC) -- skipping reference refresh"
+            echo "not Monday (UTC) -- skip reference refresh"
           fi
 
       - name: Ingest
-        env:
-          date: ${{ inputs.date }}
         run: |
-          if [ "$TPEX_ENABLED" = "1" ]; then
-            xvfb-run -a python -m ingest.run ${date:+--date $date}
-          else
-            python -m ingest.run ${date:+--date $date}
-          fi
+          python -m ingest.run --mode daily \
+            ${{ inputs.force && '--force' || '' }} \
+            ${{ inputs.skip_sweep && '--skip-sweep' || '' }}
 
-      - name: Commit manifest / log / reference
+      - name: Commit manifest / log / refresh state / reference
         if: always()
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- manifest.json logs reference.db 2>/dev/null || true
+          git add -A -- manifest.json refresh_state.json logs reference.db 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "nothing to commit"
           else
-            git commit -m "data: ingest $(date -u +%F) [skip ci]"
+            git commit -m "data: daily ingest $(date -u +%F) [skip ci]"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
             git push
           fi

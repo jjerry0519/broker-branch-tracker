@@ -1,0 +1,64 @@
+name: backfill
+
+# One-time historical fill: one zco0 range request per (stock, branch) over the
+# last `months` months. The full matrix is ~1.7M cells, so run this once per
+# `shard` value (e.g. 1/8 .. 8/8); each shard is a contiguous slice of the stock
+# universe. Re-runnable and idempotent -- rows merge/dedup into the day files.
+
+on:
+  workflow_dispatch:
+    inputs:
+      shard:
+        description: 'Stock slice "i/N" (e.g. 3/8). Empty = whole universe.'
+        type: string
+        default: "1/8"
+      months:
+        description: "How many months back to reach"
+        type: string
+        default: "15"
+      stock_limit:
+        description: "Cap the universe before slicing (smoke test). 0 = no cap."
+        type: string
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: backfill-${{ inputs.shard }}
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_REPO: jjerry0519/broker-branch-tracker-data
+      GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+      STOCK_LIMIT: ${{ inputs.stock_limit || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Backfill shard ${{ inputs.shard }}
+        run: |
+          python -m ingest.run --mode backfill \
+            --shard "${{ inputs.shard }}" --months "${{ inputs.months }}"
+
+      - name: Commit manifest / log / refresh state
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- manifest.json refresh_state.json logs 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "data: backfill ${{ inputs.shard }} $(date -u +%F) [skip ci]"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push
+          fi

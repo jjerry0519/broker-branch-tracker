@@ -1,8 +1,8 @@
 import httpx
 import pytest
 
-from ingest import twse_client
-from ingest.twse_parse import BsrPage
+from fallback import twse_client
+from fallback.twse_parse import BsrPage
 
 MENU_HTML = """<html><body><form>
 <input name="__VIEWSTATE" value="vs"/><input name="__EVENTVALIDATION" value="ev"/>
@@ -67,7 +67,7 @@ def test_fetch_stock_retries_then_fails(monkeypatch):
 
 @pytest.mark.integration
 def test_fetch_stock_live_2330():
-    from ingest.twse_client import new_client
+    from fallback.twse_client import new_client
     with new_client() as c:
         page = twse_client.fetch_stock(c, "2330", max_attempts=30)
     assert page.stock_id == "2330"

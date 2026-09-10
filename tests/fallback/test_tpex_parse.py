@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ingest.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
+from fallback.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
 
 FIXTURE = Path(__file__).parent / "fixtures" / "tpex_sample.json"
 

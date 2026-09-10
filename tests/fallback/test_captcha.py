@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ingest.captcha import looks_valid, solve
+from fallback.captcha import looks_valid, solve
 
 SAMPLES = sorted((Path(__file__).parent / "fixtures" / "captcha_samples").glob("*.png"))
 

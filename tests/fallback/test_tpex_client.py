@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from ingest import tpex_client
-from ingest.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
+from fallback import tpex_client
+from fallback.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "tpex_sample.json").read_text("utf-8"))
 

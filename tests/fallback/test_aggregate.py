@@ -1,4 +1,4 @@
-from ingest.aggregate import RawRow, aggregate
+from fallback.aggregate import RawRow, aggregate
 
 
 def test_aggregate_sums_price_levels_and_computes_net():

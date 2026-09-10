@@ -5,8 +5,8 @@ import re
 import httpx
 from bs4 import BeautifulSoup
 
-from ingest.captcha import looks_valid, solve
-from ingest.twse_parse import BsrPage, parse_bsr_csv
+from fallback.captcha import looks_valid, solve
+from fallback.twse_parse import BsrPage, parse_bsr_csv
 
 _BASE = "https://bsr.twse.com.tw/bshtm/"
 _UA = "broker-branch-tracker/1.0 (+personal research)"

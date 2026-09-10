@@ -1,0 +1,8 @@
+# Only needed to run fallback.* (the official-source break-glass scrapers) and
+# tests/fallback/. NOT installed on the daily pipeline.
+-r requirements.txt
+ddddocr==1.6.1
+playwright==1.49.1
+patchright==1.49.1
+beautifulsoup4==4.12.3
+lxml==5.3.0

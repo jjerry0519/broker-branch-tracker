@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ingest.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
+from fallback.tpex_parse import BrokerBsPage, TpexRetry, parse_brokerbs
 
 _PAGE = "https://www.tpex.org.tw/zh-tw/mainboard/trading/info/brokerBS.html"
 _ENDPOINT = "https://www.tpex.org.tw/www/zh-tw/afterTrading/brokerBS"

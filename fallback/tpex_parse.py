@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ingest.aggregate import RawRow
+from fallback.aggregate import RawRow
 
 _DETAIL_FIELDS = ["序號", "券商", "價格", "買進股數", "賣出股數"]
 

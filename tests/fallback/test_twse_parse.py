@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ingest.twse_parse import BsrPage, parse_bsr_csv
+from fallback.twse_parse import BsrPage, parse_bsr_csv
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bsr_sample.csv"
 
