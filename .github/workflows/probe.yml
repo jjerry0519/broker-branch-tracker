@@ -1,14 +1,12 @@
-name: probe-histock
+name: probe-djhtm
 on: { workflow_dispatch: {} }
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.13" }
-      - run: pip install patchright==1.49.1
-      - run: python -m patchright install --with-deps chromium
-      - run: sudo apt-get update && sudo apt-get install -y xvfb
-      - run: xvfb-run -a python scripts/probe_histock.py
+      - run: pip install "httpx>=0.27"
+      - run: python scripts/probe_djhtm.py
