@@ -45,8 +45,10 @@
   最冷門格子的「最新一天」最多延遲 `CYCLE_DAYS` 天。
 - **查詢即時補抓**（Plan 2）：網頁打開某股／某組合時，若庫裡該格過期就當場打一次 `zco0`
   （1–2 秒）補到最新再顯示。使用者碰到的東西永遠是最新的。
-- **一次性回補**：`--mode backfill --shard i/N`，對全矩陣各打一次 15 個月的 `zco0`，分幾個
-  `workflow_dispatch` run 跑完。可重跑、冪等（列會 merge/dedup 進當日檔）。
+- **一次性回補**：`--mode backfill --shard i/N`（建議 N≈24），每片對其負責的股票 × 全分點
+  各打一次 15 個月的 `zco0`，寫入**該片專屬**的 `<date>__bfs<i>-<N>.parquet` staging 檔
+  （不下載合併 → 多片可並行、互不覆寫），每 10 檔 checkpoint 一次。全部跑完後跑一次
+  `--mode compact`（`compact.yml`）把 staging 併進正式 `<date>.parquet`、刪除 staging。
 
 `refresh_state.json`（`{stock_id: 補到的日}`）與 `manifest.json`、`logs/` 每日提交回程式碼 repo。
 
@@ -95,8 +97,9 @@ python -m venv .venv
 GH_REPO=jjerry0519/broker-branch-tracker-data GH_TOKEN=<PAT> \
   .venv/Scripts/python -m ingest.run --mode daily
 
-# 一次性回補（分 8 片，逐一 dispatch）
-.venv/Scripts/python -m ingest.run --mode backfill --shard 1/8 --months 15
+# 一次性回補（分 24 片，dispatch backfill.yml 各片；跑完再 dispatch compact.yml）
+.venv/Scripts/python -m ingest.run --mode backfill --shard 1/24 --months 15
+.venv/Scripts/python -m ingest.run --mode compact          # 併 staging → 正式逐日檔
 
 # 測試
 .venv/Scripts/python -m pytest                          # 核心（tests/fallback 自動 skip）
