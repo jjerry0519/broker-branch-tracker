@@ -1,3 +1,12 @@
+"""``BranchFlow`` -- one branch's net flow in one stock on one trading day.
+
+Populated from the SysJust ``zco0`` feed, which reports 張 (lots); the pipeline
+stores shares = 張 x 1000. Because the source rounds buy / sell / net to whole
+lots *independently*, ``net_shares`` (the source's own 買賣超 column x 1000) is
+the most accurate figure and ``buy_shares - sell_shares`` can differ from it by
++-1000. Keep ``net_shares`` as the headline; treat buy/sell as +-1 張 detail.
+``close_price`` is 0.0 on historical rows (joined per-day downstream).
+"""
 from __future__ import annotations
 
 from dataclasses import astuple, dataclass, fields
