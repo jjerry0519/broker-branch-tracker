@@ -56,11 +56,22 @@ def test_parse_zco0_all_zero_window_is_empty():
     assert page.checksum_ok is True
 
 
-def test_parse_zco0_rejects_blocked_and_empty():
+def test_parse_zco0_rejects_blocked_and_wrong_page():
     with pytest.raises(DjhtmError):
         parse_zco0(b"<html><head><title>Just a moment...</title></head></html>")
     with pytest.raises(DjhtmError):
         parse_zco0(b"<html><body><p>no table here</p></body></html>")
+
+
+def test_parse_zco0_empty_window_but_valid_page_is_not_an_error():
+    # a real SysJust date-range page for a (stock, branch) pair that never traded
+    # in the window: no rows, no checksum, but the init call is still there
+    html = ("<html><body><script>var getYMD1 = '2026/09/09';"
+            "PageInit(document.F);</script>"
+            "<table id='oMainTable'></table></body></html>")
+    page = parse_zco0(html)
+    assert page.rows == [] and page.period_net_lots == 0
+    assert page.empty is True and page.checksum_ok is True
 
 
 def test_thousands_separators_and_negative_reds():

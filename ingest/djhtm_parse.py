@@ -120,6 +120,10 @@ class Zco0Page:
 
 
 _ZCO0_HEADER_RE = re.compile(r"^(.*?)\s*»\s*(.+?)\((\d{3,4}[0-9A-Z]?)\)")
+# The SysJust date-range page always ships this init call, even when the chosen
+# (stock, branch, window) had no trades at all (-> no rows, no checksum). Its
+# presence is how an empty-but-valid page is told apart from a wrong/blocked one.
+_ZCO0_SHELL_RE = re.compile(r"getYMD1|PageInit\(document\.F\)")
 
 
 def parse_zco0(body: bytes | str) -> Zco0Page:
@@ -145,7 +149,12 @@ def parse_zco0(body: bytes | str) -> Zco0Page:
         stock_id = hdr.group(3)
 
     if not rows and period is None:
-        raise DjhtmError("no data rows and no checksum -- not a zco0 page")
+        # No rows and no checksum: either this pair simply never traded in the
+        # window (valid -- the SysJust date form is still there) or the response
+        # is a wrong/blocked page (no form).
+        if not _ZCO0_SHELL_RE.search(html):
+            raise DjhtmError("no rows, no checksum, no date form -- not a zco0 page")
+        return Zco0Page([], 0, stock_id, branch_name)
     return Zco0Page(rows, period, stock_id, branch_name)
 
 
