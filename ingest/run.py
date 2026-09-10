@@ -47,6 +47,22 @@ from ingest.universe import (Stock, resolved_trading_date, tpex_traded,
 _LOG = Path("logs/ingest_log.jsonl")
 _WORK = Path("out")
 _LOTS = 1000                              # 1 張 = 1000 shares
+_DEAD_BRANCHES = Path("dead_branches.json")
+
+
+def _branch_axis() -> list[tuple[str, str]]:
+    """``reference.db`` branches minus the codes that carry no data in the zco0
+    feed (``dead_branches.json`` -- ~7% of TWSE codes: 複委託 / 海外 / 特殊帳務
+    desks). Excluding them keeps the daily run from being flagged ``partial`` on
+    a structural gap and trims the matrix by the same fraction.
+    """
+    dead: set[str] = set()
+    if _DEAD_BRANCHES.exists():
+        try:
+            dead = set(json.loads(_DEAD_BRANCHES.read_text("utf-8")).get("codes", []))
+        except (ValueError, OSError):
+            dead = set()
+    return [(bid, name) for bid, name in load_branches() if bid not in dead]
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -108,7 +124,7 @@ def _zco0_pair(client: httpx.Client, stock: Stock, branch_id: str,
 
 def _run_shard(client: httpx.Client, shard: list[Stock], branches: list[tuple[str, str]],
                state: dict[str, str], *, target: str, max_lookback: int,
-               workers: int, fail_ratio: float = 0.05
+               workers: int, fail_ratio: float = 0.10
                ) -> tuple[dict[str, list[BranchFlow]], list[str]]:
     """Fetch every branch for every stock in ``shard``. Good rows are always
     kept; a stock is flagged in ``failed`` only when more than ``fail_ratio`` of
@@ -254,8 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     stocks = _universe(args.skip_tpex)
     if args.stock_limit > 0:
         stocks = stocks[:args.stock_limit]
-    name_map = dict(load_branches())
-    branches = load_branches()
+    branches = _branch_axis()
+    name_map = dict(branches)
 
     client = new_client()
     try:

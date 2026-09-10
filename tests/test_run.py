@@ -32,6 +32,18 @@ def test_fetch_market_empty():
     assert out == [] and failed == []
 
 
+def test_branch_axis_drops_dead_codes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run, "load_branches",
+                        lambda *a, **k: [("9200", "富邦"), ("102T", "複委託"),
+                                         ("1440", "美林")])
+    assert run._branch_axis() == [("9200", "富邦"), ("102T", "複委託"),
+                                  ("1440", "美林")]          # no file -> keep all
+    (tmp_path / "dead_branches.json").write_text(
+        '{"codes": ["102T"]}', encoding="utf-8")
+    assert run._branch_axis() == [("9200", "富邦"), ("1440", "美林")]
+
+
 def test_fetch_market_custom_key():
     items = [("2330", "9200"), ("2330", "BAD")]
 

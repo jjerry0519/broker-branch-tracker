@@ -33,12 +33,12 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 330          # first cycle uses 45-day windows; steady state is ~1h
     env:
       GH_REPO: jjerry0519/broker-branch-tracker-data
       GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
       CYCLE_DAYS: "20"
-      WORKERS: "16"
+      WORKERS: "24"
       STOCK_LIMIT: ${{ inputs.stock_limit || '0' }}
     steps:
       - uses: actions/checkout@v4
