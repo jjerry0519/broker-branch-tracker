@@ -24,14 +24,18 @@ from ingest.djhtm_parse import DjhtmError, Zco0Page, ZcoPage, parse_zco, parse_z
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
-# Ordered; index 0 is tried first. Verified reachable from a GitHub-Actions
-# runner on 2026-09-10: fubon-ebrokerdj 8/8, moneydj blocked only by a local
-# OpenSSL cert-chain quirk (handled by the lenient context below).
+# Ordered; index 0 is tried first, the rest are failover only. All six serve an
+# identical /z/zc/zco/... tree. fubon-ebrokerdj is primary -- the one verified
+# from a GitHub-Actions runner IP (8/8 on 2026-09-10); the others were verified
+# from a residential IP and answer in ~0.3-0.5 s. moneydj needs the lenient TLS
+# context below (its intermediate lacks a Subject Key Identifier).
 MIRRORS: tuple[str, ...] = (
     "https://fubon-ebrokerdj.fbs.com.tw",
     "https://www.moneydj.com",
-    "https://sjmain.djnews.com.tw",
-    "https://jsjustweb.jihsun.com.tw",
+    "https://jdata.yuanta.com.tw",
+    "https://newjust.masterlink.com.tw",
+    "https://concords.moneydj.com",
+    "https://stock.capital.com.tw",
 )
 
 _ZCO0_PATH = "/z/zc/zco/zco0/zco0.djhtm"

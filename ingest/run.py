@@ -108,9 +108,12 @@ def _zco0_pair(client: httpx.Client, stock: Stock, branch_id: str,
 
 def _run_shard(client: httpx.Client, shard: list[Stock], branches: list[tuple[str, str]],
                state: dict[str, str], *, target: str, max_lookback: int,
-               workers: int) -> tuple[dict[str, list[BranchFlow]], list[str]]:
-    """Fetch every branch for every stock in ``shard``. Returns
-    ``({date: [flows]}, failed_stock_ids)``."""
+               workers: int, fail_ratio: float = 0.05
+               ) -> tuple[dict[str, list[BranchFlow]], list[str]]:
+    """Fetch every branch for every stock in ``shard``. Good rows are always
+    kept; a stock is flagged in ``failed`` only when more than ``fail_ratio`` of
+    its branch calls errored (isolated transient misses are expected at ~880
+    calls/stock). Returns ``({date: [flows]}, failed_stock_ids)``."""
     by_date: dict[str, list[BranchFlow]] = defaultdict(list)
     failed: list[str] = []
     for stock in shard:
@@ -118,7 +121,7 @@ def _run_shard(client: httpx.Client, shard: list[Stock], branches: list[tuple[st
                                   max_lookback_days=max_lookback)
         if d_from > d_to:
             continue
-        pair_items = [(bid, bname) for bid, bname in branches]
+        pair_items = list(branches)
 
         def one(item: tuple[str, str], _s=stock, _f=d_from, _t=d_to) -> list[BranchFlow]:
             return _zco0_pair(client, _s, item[0], item[1], _f, _t)
@@ -127,7 +130,7 @@ def _run_shard(client: httpx.Client, shard: list[Stock], branches: list[tuple[st
                                   key=lambda it: f"{stock.stock_id}/{it[0]}")
         for f in flows:
             by_date[f.date].append(f)
-        if bad:
+        if pair_items and len(bad) / len(pair_items) > fail_ratio:
             failed.append(stock.stock_id)
     failed.sort()
     return by_date, failed
@@ -218,7 +221,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--shard", default="",
                     help='backfill mode: "i/N" -- process only the i-th of N '
                          "stock slices (1-based)")
-    ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--workers", type=int,
+                    default=int(os.environ.get("WORKERS", "8")))
     ap.add_argument("--stock-limit", type=int,
                     default=int(os.environ.get("STOCK_LIMIT", "0")))
     args = ap.parse_args(argv)
