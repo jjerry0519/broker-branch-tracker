@@ -26,6 +26,8 @@ __all__ = [
     "release_tag",
     "upload_assets",
     "download_asset",
+    "list_release_assets",
+    "delete_asset",
     "asset_url",
     "prune_old_releases",
     "merge_manifest",
@@ -115,6 +117,25 @@ def download_asset(tag: str, filename: str, dest_dir: str, *, repo: str) -> str 
             return None
         raise
     return out if Path(out).exists() else None
+
+
+def list_release_assets(tag: str, *, repo: str) -> list[str]:
+    """Asset filenames on release ``tag`` (empty list if the release is absent)."""
+    try:
+        data = _gh_json("release", "view", tag, "--repo", repo, "--json", "assets")
+    except subprocess.CalledProcessError:
+        return []
+    return [a["name"] for a in data.get("assets", [])]
+
+
+def delete_asset(tag: str, filename: str, *, repo: str) -> None:
+    """Delete one asset from release ``tag`` (no error if already gone)."""
+    try:
+        _gh("release", "delete-asset", tag, filename, "--repo", repo, "--yes")
+    except subprocess.CalledProcessError as e:
+        blob = f"{e.stderr or ''}{e.stdout or ''}".lower()
+        if "not found" not in blob:
+            raise
 
 
 def asset_url(tag: str, filename: str, *, repo: str) -> str:

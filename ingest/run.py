@@ -24,6 +24,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -37,10 +38,11 @@ from ingest.reference import load_branches
 from ingest.schedule import (load_state, mark_done, next_shard, save_state,
                              window_for)
 from ingest.schema import BranchFlow
-from ingest.storage import (asset_url, dedup_flows, download_asset, load_manifest,
-                            merge_manifest, prune_old_releases, read_flows,
-                            release_tag, save_manifest, upload_assets,
-                            write_latest, write_parquet)
+from ingest.storage import (asset_url, dedup_flows, delete_asset, download_asset,
+                            list_release_assets, load_manifest, merge_manifest,
+                            prune_old_releases, read_flows, release_tag,
+                            save_manifest, upload_assets, write_latest,
+                            write_parquet)
 from ingest.universe import (Stock, resolved_trading_date, tpex_traded,
                              twse_traded)
 
@@ -124,48 +126,74 @@ def _zco0_pair(client: httpx.Client, stock: Stock, branch_id: str,
 
 def _run_shard(client: httpx.Client, shard: list[Stock], branches: list[tuple[str, str]],
                state: dict[str, str], *, target: str, max_lookback: int,
-               workers: int, fail_ratio: float = 0.10
+               workers: int, fail_ratio: float = 0.10,
+               flush: "Callable[[dict[str, list[BranchFlow]], list[str]], None] | None" = None,
+               flush_every: int = 0
                ) -> tuple[dict[str, list[BranchFlow]], list[str]]:
     """Fetch every branch for every stock in ``shard``. Good rows are always
     kept; a stock is flagged in ``failed`` only when more than ``fail_ratio`` of
-    its branch calls errored (isolated transient misses are expected at ~880
-    calls/stock). Returns ``({date: [flows]}, failed_stock_ids)``."""
+    its branch calls errored (isolated transient misses are expected at ~820
+    calls/stock).
+
+    If ``flush`` is given, it is called with ``(by_date_so_far, stock_ids_done)``
+    every ``flush_every`` stocks (and the accumulator is cleared) so a long
+    backfill checkpoints instead of losing everything on a timeout. Returns
+    ``({date: [flows]} still un-flushed, failed_stock_ids)``.
+    """
     by_date: dict[str, list[BranchFlow]] = defaultdict(list)
     failed: list[str] = []
-    for stock in shard:
+    pending: list[str] = []
+    for idx, stock in enumerate(shard, 1):
         d_from, d_to = window_for(stock.stock_id, state, target=target,
                                   max_lookback_days=max_lookback)
-        if d_from > d_to:
-            continue
-        pair_items = list(branches)
+        if d_from <= d_to:
+            pair_items = list(branches)
 
-        def one(item: tuple[str, str], _s=stock, _f=d_from, _t=d_to) -> list[BranchFlow]:
-            return _zco0_pair(client, _s, item[0], item[1], _f, _t)
+            def one(item: tuple[str, str], _s=stock, _f=d_from, _t=d_to) -> list[BranchFlow]:
+                return _zco0_pair(client, _s, item[0], item[1], _f, _t)
 
-        flows, bad = fetch_market(pair_items, one, workers=workers,
-                                  key=lambda it: f"{stock.stock_id}/{it[0]}")
-        for f in flows:
-            by_date[f.date].append(f)
-        if pair_items and len(bad) / len(pair_items) > fail_ratio:
-            failed.append(stock.stock_id)
+            flows, bad = fetch_market(pair_items, one, workers=workers,
+                                      key=lambda it: f"{stock.stock_id}/{it[0]}")
+            for f in flows:
+                by_date[f.date].append(f)
+            if pair_items and len(bad) / len(pair_items) > fail_ratio:
+                failed.append(stock.stock_id)
+        pending.append(stock.stock_id)
+        if flush and flush_every and idx % flush_every == 0:
+            flush(by_date, pending)
+            by_date = defaultdict(list)
+            pending = []
+    if flush and pending:
+        flush(by_date, pending)
+        by_date = defaultdict(list)
     failed.sort()
     return by_date, failed
 
 
 def _merge_and_upload(by_date: dict[str, list[BranchFlow]], *, repo: str,
-                      manifest: dict) -> dict[str, int]:
-    """For each affected date: download the existing ``<date>.parquet`` (if any),
-    append the new flows, dedup, rewrite, upload. Returns ``{date: row_count}``.
+                      manifest: dict, stage_tag: str = "") -> dict[str, int]:
+    """For each affected date, write a ``<date>.parquet`` day-partition and
+    upload it. Returns ``{date: row_count}``.
+
+    Default (``stage_tag`` empty): download the existing partition, append, dedup
+    on ``(date, stock, branch)``, re-upload -- the single daily job owns the
+    canonical file, so this is race-free. Also updates ``manifest``.
+
+    ``stage_tag`` set (backfill): write ``<date>__bf<tag>.parquet`` with *only*
+    this shard's rows, no download/merge -- many backfill shards run in parallel,
+    each owning its own staging files; ``--mode compact`` folds them in later.
+    The manifest is left for compaction to update.
     """
     _WORK.mkdir(exist_ok=True)
     counts: dict[str, int] = {}
     for date_iso, new_flows in sorted(by_date.items()):
-        fname = f"{date_iso}.parquet"
+        canon = f"{date_iso}.parquet"
+        fname = f"{date_iso}__bf{stage_tag}.parquet" if stage_tag else canon
         path = str(_WORK / fname)
         tag = release_tag(date_iso)
         existing: list[BranchFlow] = []
-        if repo:
-            got = download_asset(tag, fname, str(_WORK), repo=repo)
+        if repo and not stage_tag:
+            got = download_asset(tag, canon, str(_WORK), repo=repo)
             if got:
                 existing = read_flows(got)
         merged = dedup_flows(existing + new_flows)
@@ -173,14 +201,71 @@ def _merge_and_upload(by_date: dict[str, list[BranchFlow]], *, repo: str,
         counts[date_iso] = n
         if repo:
             upload_assets(tag, [path], repo=repo)
-            url = asset_url(tag, fname, repo=repo)
-        else:
-            url = path
-        entry = manifest.get("days", {}).get(date_iso, {})
-        entry["flows"] = url
-        entry.setdefault("rows", {})["flows"] = n
-        manifest.update(merge_manifest(manifest, date_iso, entry))
+        if stage_tag:
+            continue
+        _set_day(manifest, date_iso,
+                 asset_url(tag, canon, repo=repo) if repo else path, n)
     return counts
+
+
+def _set_day(manifest: dict, date_iso: str, url: str, n: int) -> None:
+    """Record one day-partition in the manifest without trimming (retention is
+    the daily path's job, via ``merge_manifest`` on the target day)."""
+    days = manifest.setdefault("days", {})
+    entry = days.get(date_iso, {})
+    entry["flows"] = url
+    entry.setdefault("rows", {})["flows"] = n
+    days[date_iso] = entry
+    manifest["updated"] = _now()
+
+
+def _compact(*, repo: str, manifest: dict, month: str = "") -> dict[str, int]:
+    """Fold every ``<date>__bf*.parquet`` staging asset into its canonical
+    ``<date>.parquet`` (dedup union), then delete the staging assets. Scans all
+    ``data-YYYY-MM`` releases, or just ``data-<month>`` when ``month`` is given.
+    Returns ``{date: final_row_count}``.
+    """
+    _WORK.mkdir(exist_ok=True)
+    months = [month] if month else _data_months(repo=repo)
+    counts: dict[str, int] = {}
+    for mo in months:
+        tag = f"data-{mo}"
+        assets = list_release_assets(tag, repo=repo)
+        staged: dict[str, list[str]] = defaultdict(list)
+        for a in assets:
+            m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})__bf.*\.parquet", a)
+            if m:
+                staged[m.group(1)].append(a)
+        for date_iso, stage_files in sorted(staged.items()):
+            canon = f"{date_iso}.parquet"
+            flows: list[BranchFlow] = []
+            if canon in assets:
+                got = download_asset(tag, canon, str(_WORK), repo=repo)
+                if got:
+                    flows += read_flows(got)
+            for sf in stage_files:
+                got = download_asset(tag, sf, str(_WORK), repo=repo)
+                if got:
+                    flows += read_flows(got)
+            merged = dedup_flows(flows)
+            path = str(_WORK / canon)
+            n = write_parquet(merged, path)
+            counts[date_iso] = n
+            upload_assets(tag, [path], repo=repo)
+            for sf in stage_files:
+                delete_asset(tag, sf, repo=repo)
+            _set_day(manifest, date_iso, asset_url(tag, canon, repo=repo), n)
+    return counts
+
+
+def _data_months(*, repo: str) -> list[str]:
+    from ingest.storage import _gh_json
+    try:
+        rels = _gh_json("release", "list", "--repo", repo, "--json", "tagName")
+    except Exception:  # noqa: BLE001
+        return []
+    return sorted(r["tagName"][5:] for r in rels
+                  if r["tagName"].startswith("data-"))
 
 
 # --------------------------------------------------------------------------- #
@@ -220,8 +305,14 @@ def _universe(skip_tpex: bool) -> list[Stock]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=("daily", "backfill"), default="daily")
+    ap.add_argument("--mode", choices=("daily", "backfill", "compact"),
+                    default="daily")
     ap.add_argument("--date", default="")
+    ap.add_argument("--month", default="",
+                    help="compact mode: only fold staging for data-<YYYY-MM>")
+    ap.add_argument("--flush-every", type=int, default=10,
+                    help="backfill mode: checkpoint (upload staging + save state) "
+                         "every N stocks")
     ap.add_argument("--repo", default=os.environ.get("GH_REPO", ""))
     ap.add_argument("--skip-tpex", action="store_true",
                     default=os.environ.get("TPEX_ENABLED", "1") == "0")
@@ -243,6 +334,17 @@ def main(argv: list[str] | None = None) -> int:
                     default=int(os.environ.get("STOCK_LIMIT", "0")))
     args = ap.parse_args(argv)
     started = _now()
+
+    if args.mode == "compact":
+        manifest = load_manifest()
+        counts = _compact(repo=args.repo, manifest=manifest, month=args.month)
+        save_manifest(manifest)
+        _append_log({"mode": "compact", "status": "ok",
+                     "dates_compacted": len(counts),
+                     "row_count": sum(counts.values()),
+                     "started_at": started, "finished_at": _now()})
+        print(f"compacted {len(counts)} day-partitions")
+        return 0
 
     with httpx.Client() as probe:
         target = resolved_trading_date(probe)
@@ -292,10 +394,29 @@ def main(argv: list[str] | None = None) -> int:
 
         # ---- rolling / backfill zco0 shard --------------------------------- #
         state = load_state()
+        total = {"dates": 0, "rows": 0}
+
         if args.mode == "backfill":
             lookback = args.months * 31
             shard = _apply_shard(stocks, args.shard)
-            legname = f"backfill{args.shard or ''}"
+            legname = f"backfill {args.shard or 'all'}"
+            stage_tag = "s" + (args.shard or "all").replace("/", "-")
+
+            def _flush(bd: dict[str, list[BranchFlow]], done_ids: list[str],
+                       _tag=stage_tag) -> None:
+                nonlocal state
+                c = _merge_and_upload(bd, repo=args.repo, manifest=manifest,
+                                      stage_tag=_tag)
+                total["dates"] += len(c)
+                total["rows"] += sum(c.values())
+                state = mark_done(state, done_ids, target)
+                save_state(state)
+                save_manifest(manifest)
+
+            _, shard_failed = _run_shard(
+                client, shard, branches, state, target=target,
+                max_lookback=lookback, workers=args.workers,
+                flush=_flush, flush_every=max(1, args.flush_every))
         else:
             lookback = args.max_lookback
             shard = [s for s in stocks
@@ -303,19 +424,18 @@ def main(argv: list[str] | None = None) -> int:
                          [x.stock_id for x in stocks], state,
                          cycle_days=args.cycle_days))]
             legname = "shard"
-
-        by_date, shard_failed = _run_shard(
-            client, shard, branches, state, target=target,
-            max_lookback=lookback, workers=args.workers)
-        counts = _merge_and_upload(by_date, repo=args.repo, manifest=manifest)
-
-        state = mark_done(state, [s.stock_id for s in shard], target)
-        save_state(state)
+            by_date, shard_failed = _run_shard(
+                client, shard, branches, state, target=target,
+                max_lookback=lookback, workers=args.workers)
+            c = _merge_and_upload(by_date, repo=args.repo, manifest=manifest)
+            total["dates"], total["rows"] = len(c), sum(c.values())
+            state = mark_done(state, [s.stock_id for s in shard], target)
+            save_state(state)
 
         _append_log({"date": target, "mode": args.mode, "leg": legname,
                      "status": "ok" if not shard_failed else "partial",
-                     "shard_stocks": len(shard), "dates_written": len(counts),
-                     "row_count": sum(counts.values()), "failed": shard_failed,
+                     "shard_stocks": len(shard), "dates_written": total["dates"],
+                     "row_count": total["rows"], "failed": shard_failed,
                      "started_at": started, "finished_at": _now()})
     finally:
         client.close()
@@ -324,9 +444,10 @@ def main(argv: list[str] | None = None) -> int:
         entry = manifest.get("days", {}).get(target, {})
         entry["sweep_done"] = not args.skip_sweep
         manifest.update(merge_manifest(manifest, target, entry))
-
-    if args.repo:
-        prune_old_releases(repo=args.repo)
+        # Retention only on the daily path -- backfill deliberately reaches past
+        # the 13-month window and must not prune what it is filling.
+        if args.repo:
+            prune_old_releases(repo=args.repo)
     save_manifest(manifest)
     return 0
 

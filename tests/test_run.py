@@ -102,6 +102,55 @@ def test_merge_and_upload_local_dedups_and_indexes(tmp_path, monkeypatch):
     assert manifest["days"][d]["rows"]["flows"] == 2
 
 
+def test_merge_and_upload_staging_mode_writes_shard_file_no_manifest(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    d = "2026-08-15"
+    by_date = {d: [BranchFlow(d, "twse", "2330", "9200", "富邦", 5000, 0, 5000, 0.0)]}
+    manifest = {"days": {}}
+
+    counts = run._merge_and_upload(by_date, repo="", manifest=manifest,
+                                   stage_tag="s3-20")
+
+    assert counts == {d: 1}
+    assert (tmp_path / "out" / f"{d}__bfs3-20.parquet").exists()
+    assert not (tmp_path / "out" / f"{d}.parquet").exists()
+    assert manifest == {"days": {}}                    # staging never touches manifest
+
+
+def test_compact_folds_staging_into_canonical(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    d = "2026-08-15"
+    (tmp_path / "out").mkdir()
+    # a canonical file with one row + a staging file with a different branch
+    from ingest.storage import write_parquet as _wp
+    _wp([BranchFlow(d, "twse", "2330", "9200", "富邦", 1000, 0, 1000, 0.0)],
+        str(tmp_path / "canon.parquet"))
+    _wp([BranchFlow(d, "twse", "2330", "1440", "美林", 2000, 0, 2000, 0.0)],
+        str(tmp_path / "stage.parquet"))
+
+    monkeypatch.setattr(run, "_data_months", lambda **k: ["2026-08"])
+    monkeypatch.setattr(run, "list_release_assets",
+                        lambda tag, **k: [f"{d}.parquet", f"{d}__bfs1-4.parquet"])
+
+    def fake_dl(tag, fname, dest, **k):
+        src = tmp_path / ("canon.parquet" if fname == f"{d}.parquet" else "stage.parquet")
+        out = tmp_path / dest / fname
+        out.write_bytes(src.read_bytes())
+        return str(out)
+
+    uploaded, deleted = [], []
+    monkeypatch.setattr(run, "download_asset", fake_dl)
+    monkeypatch.setattr(run, "upload_assets", lambda tag, paths, **k: uploaded.extend(paths))
+    monkeypatch.setattr(run, "delete_asset", lambda tag, fn, **k: deleted.append(fn))
+
+    manifest: dict = {"days": {}}
+    counts = run._compact(repo="r", manifest=manifest, month="2026-08")
+
+    assert counts == {d: 2}                            # both branches survived
+    assert deleted == [f"{d}__bfs1-4.parquet"]         # staging removed
+    assert manifest["days"][d]["rows"]["flows"] == 2
+
+
 # --------------------------------------------------------------------------- #
 # main -- guard / skip
 # --------------------------------------------------------------------------- #

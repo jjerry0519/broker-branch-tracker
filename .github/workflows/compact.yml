@@ -1,0 +1,52 @@
+name: compact
+
+# Fold every <date>__bf*.parquet backfill-staging asset into its canonical
+# <date>.parquet (dedup union) and delete the staging files. Run once after all
+# backfill shards finish; safe to re-run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Only compact data-<YYYY-MM> (empty = every data-* release)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compact
+  cancel-in-progress: false
+
+jobs:
+  compact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_REPO: jjerry0519/broker-branch-tracker-data
+      GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Compact staging -> canonical
+        run: python -m ingest.run --mode compact --month "${{ inputs.month }}"
+
+      - name: Commit manifest / log
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- manifest.json logs 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "data: compact $(date -u +%F) [skip ci]"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push
+          fi

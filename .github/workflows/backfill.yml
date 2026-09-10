@@ -1,17 +1,21 @@
 name: backfill
 
 # One-time historical fill: one zco0 range request per (stock, branch) over the
-# last `months` months. The full matrix is ~1.7M cells, so run this once per
-# `shard` value (e.g. 1/8 .. 8/8); each shard is a contiguous slice of the stock
-# universe. Re-runnable and idempotent -- rows merge/dedup into the day files.
+# last `months` months. The full matrix is ~1.5M cells, so run this once per
+# `shard` value (e.g. 1/24 .. 24/24) -- each shard is a contiguous slice of the
+# stock universe and writes its own <date>__bf<shard>.parquet staging assets, so
+# shards can run in parallel without clobbering each other. Checkpoints every
+# --flush-every stocks (default 10), so a timeout loses <10 stocks of work.
+# When every shard is done, run the `compact` workflow to fold staging into the
+# canonical <date>.parquet files.
 
 on:
   workflow_dispatch:
     inputs:
       shard:
-        description: 'Stock slice "i/N" (e.g. 3/8). Empty = whole universe.'
+        description: 'Stock slice "i/N" (e.g. 3/24). Empty = whole universe.'
         type: string
-        default: "1/8"
+        default: "1/24"
       months:
         description: "How many months back to reach"
         type: string
