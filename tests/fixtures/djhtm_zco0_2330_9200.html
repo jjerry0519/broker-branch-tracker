@@ -1,0 +1,639 @@
+<!DOCTYPE>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=big5">
+<script language="JavaScript"><!--
+document.writeln('<script language="JavaScript" src="/z/js/jquery.djjs"></script>\n');
+// --></script>
+<script language="JavaScript" src="/z/js/jsFunction.djjs"></script>
+<script language="JavaScript" src="/z/js/isSpecialKind.djjs"></script>
+<script language="JavaScript" src="/z/js/mdj.js"></script>
+<script type="text/javascript" src="/z/js/Applet2Canvas.djjs"></script>
+<script type="text/javascript" src="/z/js/DJWebGraph.djjs"></script>
+<script type="text/javascript" src="/z/js/xml2jsonJS.djjs"></script>
+<script type="text/javascript" src="/z/js/json2xmlJS.djjs"></script>
+<script type="text/javascript" src="/z/js/json2.djjs"></script>
+<script type="text/javascript" src="/z/js/GenUpDownJS.djjs"></script>
+<link rel=stylesheet href="/z/js/mdj.css" type="text/css">
+<title>個股主力券商-2330</title>
+</head>
+<script language="JavaScript"><!--
+CheckMenu(4, '2330');
+function chkSetUpMenu(){ 
+	if (typeof(SetUpMenu) == 'function'){
+		SetUpMenu(4,'2330');
+}
+	else
+		setTimeout(function(){chkSetUpMenu();},5000);
+}
+// --></script>
+<body leftmargin="0" topmargin="0" marginwidth="0" marginheight="0">
+<div id="SysJustIFRAMEDIV">
+<table border="0" cellpadding="0" cellspacing="0" width="100%"><tr><td colspan="3" valign="top" align="left">
+<script language="javascript" src="/z/js/disableselectionjs.djjs"></script>
+<script language="javascript" src="/z/js/SU.js"></script>
+<script language="javascript"><!--
+ chkSetUpMenu();
+//--></script>
+</td></tr>
+<tr><td valign="top" align="left">
+<script language="javascript" src="/z/js/SL.js"></script>
+<script language="javascript"><!--
+ SetLeftMenu(4,'2330')
+//--></script>
+</td><td valign="top" width="99%">
+<script language="javascript"><!--
+if(typeof(ContentCenterBegin) == 'function'){ 	ContentCenterBegin();
+ } 
+//--></script>
+
+<script language="javascript" src="/z/js/zbrokerjs.djjs"></script>
+<form name="F" onSubmit="return false;">
+<table border="0"><tr><td class="t0">
+<table width="612" border="0" class="t01" cellspacing="1" cellpadding="1">
+<tr><td class="t10">凱基 對 台積電(2330)個股 單一券商歷史明細</td></tr>
+<tr><td class="t2" style="line-height:200%">
+	<input type=radio name=radio1 onclick="javascript:window.open('/z/zc/zco/zco.djhtm?a=2330','_self')">總表
+	<input type=radio name=radio1 checked>單一<SCRIPT LANGUAGE=javascript><!--
+ var sObj = eval('document.' + 'F'); 
+	iID = '9200';
+	GenFundCorpCombo('9200','9200','F');
+	for (i=0;i<sObj.sel_Broker.options.length;i++)
+	{
+		var tmpID1 = sObj.sel_Broker.options[i].value.toUpperCase();
+		if (tmpID1 == '9200') 
+		{
+			sObj.sel_Broker.selectedIndex = i;
+			break;
+		}
+	}
+	for (i=0;i<sObj.sel_BrokerBranch.options.length;i++)
+	{
+		var tmpID2 = sObj.sel_BrokerBranch.options[i].value.toUpperCase();
+		if (iID != '')
+		{
+			if (tmpID2 == iID )
+			{
+				sObj.sel_BrokerBranch.selectedIndex = i;
+				break;
+			}
+		}
+		else
+			sObj.sel_BrokerBranch.selectedIndex = 0;
+	}
+//--></SCRIPT>
+
+</td></tr>
+<tr><td class="t3n0" width="100%">
+<div id="SysJustWebGraphDIV"></div>
+</td>
+<tr><td class="t10" colspan="2">進出明細表</td></tr>
+<tr><td class="t2" colspan="2">
+<select name="D" onChange="goA();">
+<option value="0" selected>請選擇</option>
+<option value="1">近20日</option>
+<option value="2">近40日</option>
+<option value="3">近60日</option>
+</select>
+　自設區間：
+<script language="JavaScript" src="/z/js/month.djjs"></script>
+從　<SELECT name="Y2" onChange="javascript:SetMonthDate(document.F.Y2,document.F.M2,document.F.D2);">
+	<OPTION value="91"></OPTION>
+</SELECT>年 
+<SELECT name="M2" onChange="javascript:SetMonthDate(document.F.Y2,document.F.M2,document.F.D2);">
+	<OPTION value="-1"></OPTION>
+</SELECT>月 
+<SELECT name="D2">
+	<OPTION value="-1"></OPTION>
+</SELECT>日 
+ ～ 
+<SELECT name="Y1" onChange="javascript:SetMonthDate(document.F.Y1,document.F.M1,document.F.D1);">
+	<OPTION value="91"></OPTION>
+</SELECT>年 
+<SELECT name="M1" onChange="javascript:SetMonthDate(document.F.Y1,document.F.M1,document.F.D1);">
+	<OPTION value="-1"></OPTION>
+</SELECT>月 
+<SELECT name="D1">
+	<OPTION value="-1"></OPTION>
+</SELECT>日 
+<input type='hidden' name='bDate'>
+<input type='hidden' name='eDate'>
+<SCRIPT LANGUAGE=javascript><!--
+	var toDay ='2026/9/10'
+	var getYMD1 = '2025/09/05';
+	var getYMD2 = '2025/07/01';
+	PageInit(document.F);
+	function PageInit(obj)
+	{	//在 BODY onLoad 時候的初始化
+		ShowYear(obj.Y1,'2026/9/10',1,'N');
+		ShowYear(obj.Y2,'2026/9/10',1,'N');
+		SetOptionValue(obj.M1,1,12);
+		SetOptionValue(obj.M2,1,12);
+		//設定初始值
+		var YMDary1,Hary1;
+		if (getYMD1.indexOf(' ') > -1 ) {
+			YMDary1 = getYMD1.split(' ')[0].split('/');
+		}else {
+			YMDary1 = getYMD1.split('/');
+		}
+		SetFocus(obj.Y1,YMDary1[0]);
+		SetFocus(obj.M1,YMDary1[1]);
+		var YMDary2,Hary2;
+		if (getYMD2.indexOf(' ') > -1 ) {
+			YMDary2 = getYMD2.split(' ')[0].split('/');
+		}else {
+			YMDary2 = getYMD2.split('/');
+		}
+		SetFocus(obj.Y2,YMDary2[0]);
+		SetFocus(obj.M2,YMDary2[1]);
+		SetMonthDate(obj.Y1,obj.M1,obj.D1);
+		SetMonthDate(obj.Y2,obj.M2,obj.D2);
+		SetFocus(obj.D2,YMDary2[2]);
+		SetFocus(obj.D1,YMDary1[2]);
+		removeToday(obj.Y1,obj.M1,obj.D1,toDay);
+		removeToday(obj.Y2,obj.M2,obj.D2,toDay);
+	}
+	function CheckDate()
+	{
+		var Frm = document.F;
+		var y1 = parseInt(Frm.Y1.options[Frm.Y1.selectedIndex].value);
+		var m1 = parseInt(Frm.M1.options[Frm.M1.selectedIndex].value);
+		var d1 = parseInt(Frm.D1.options[Frm.D1.selectedIndex].value);
+		var y2 = parseInt(Frm.Y2.options[Frm.Y2.selectedIndex].value);
+		var m2 = parseInt(Frm.M2.options[Frm.M2.selectedIndex].value);
+		var d2 = parseInt(Frm.D2.options[Frm.D2.selectedIndex].value);
+		var sEDate = y1 + '-' + m1 + '-' + d1;
+		var sBDate = y2 + '-' + m2 + '-' + d2;
+		Frm.bDate.value = sBDate;
+		Frm.eDate.value = sEDate;
+		return checkBEdate(sBDate,sEDate);
+	}
+	function checkBEdate(sBDate,sEDate)
+	{
+		var aymd1 = sBDate.split(' ')[0].split('-');
+		var aymd2 = sEDate.split(' ')[0].split('-');
+		if (aymd1.length < 3 || aymd2.length < 3 ) {
+			alert ('日期選擇錯誤!!');
+			return false;
+		}
+		var nbdate = parseInt(aymd1[0])*1000000 + parseInt(aymd1[1])*10000 + parseInt(aymd1[2])*100;
+		var nedate = parseInt(aymd2[0])*1000000 + parseInt(aymd2[1])*10000 + parseInt(aymd2[2])*100;
+		if (nbdate > nedate) {
+			alert('您所輸入的起始日期大於結束日期');
+			return false;
+		}
+		return true;
+	}
+//--></SCRIPT>
+ <INPUT type="button" name="BB" value="查詢" onclick="javascript:goB();">
+</td></tr>
+<TR><TD class="t3n0" colspan="2"><table id="oMainTable" class="t01" width="100%" border="0" cellspacing="1" cellpadding="1">
+<tr id="oScrollMenu">
+<td class="t2" width="20%">日期</td>
+<td class="t2" width="20%">買進(張)</td>
+<td class="t2" width="20%">賣出(張)</td>
+<td class="t2" width="20%">買賣總額(張)</td>
+<td class="t2" width="20%">買賣超(張)</td>
+</tr>
+<tr>
+<TD class="t4n0">2025/09/05</TD>
+<TD class="t3n1">162</TD>
+<TD class="t3n1">816</TD>
+<TD class="t3n1">978</TD>
+<TD class="t3r1">-654</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/09/04</TD>
+<TD class="t3n1">195</TD>
+<TD class="t3n1">1,858</TD>
+<TD class="t3n1">2,053</TD>
+<TD class="t3r1">-1,663</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/09/03</TD>
+<TD class="t3n1">40</TD>
+<TD class="t3n1">308</TD>
+<TD class="t3n1">348</TD>
+<TD class="t3r1">-268</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/09/02</TD>
+<TD class="t3n1">43</TD>
+<TD class="t3n1">4</TD>
+<TD class="t3n1">47</TD>
+<TD class="t3n1">39</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/09/01</TD>
+<TD class="t3n1">223</TD>
+<TD class="t3n1">176</TD>
+<TD class="t3n1">399</TD>
+<TD class="t3n1">47</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/29</TD>
+<TD class="t3n1">165</TD>
+<TD class="t3n1">203</TD>
+<TD class="t3n1">368</TD>
+<TD class="t3r1">-38</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/28</TD>
+<TD class="t3n1">60</TD>
+<TD class="t3n1">638</TD>
+<TD class="t3n1">698</TD>
+<TD class="t3r1">-578</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/27</TD>
+<TD class="t3n1">1,097</TD>
+<TD class="t3n1">502</TD>
+<TD class="t3n1">1,599</TD>
+<TD class="t3n1">595</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/26</TD>
+<TD class="t3n1">169</TD>
+<TD class="t3n1">175</TD>
+<TD class="t3n1">344</TD>
+<TD class="t3r1">-6</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/25</TD>
+<TD class="t3n1">259</TD>
+<TD class="t3n1">776</TD>
+<TD class="t3n1">1,035</TD>
+<TD class="t3r1">-517</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/22</TD>
+<TD class="t3n1">626</TD>
+<TD class="t3n1">110</TD>
+<TD class="t3n1">736</TD>
+<TD class="t3n1">516</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/21</TD>
+<TD class="t3n1">512</TD>
+<TD class="t3n1">117</TD>
+<TD class="t3n1">629</TD>
+<TD class="t3n1">395</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/20</TD>
+<TD class="t3n1">2,651</TD>
+<TD class="t3n1">283</TD>
+<TD class="t3n1">2,934</TD>
+<TD class="t3n1">2,368</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/19</TD>
+<TD class="t3n1">663</TD>
+<TD class="t3n1">77</TD>
+<TD class="t3n1">740</TD>
+<TD class="t3n1">586</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/18</TD>
+<TD class="t3n1">711</TD>
+<TD class="t3n1">266</TD>
+<TD class="t3n1">977</TD>
+<TD class="t3n1">444</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/15</TD>
+<TD class="t3n1">1,597</TD>
+<TD class="t3n1">292</TD>
+<TD class="t3n1">1,889</TD>
+<TD class="t3n1">1,305</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/14</TD>
+<TD class="t3n1">220</TD>
+<TD class="t3n1">200</TD>
+<TD class="t3n1">420</TD>
+<TD class="t3n1">20</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/13</TD>
+<TD class="t3n1">563</TD>
+<TD class="t3n1">734</TD>
+<TD class="t3n1">1,297</TD>
+<TD class="t3r1">-172</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/12</TD>
+<TD class="t3n1">56</TD>
+<TD class="t3n1">928</TD>
+<TD class="t3n1">984</TD>
+<TD class="t3r1">-872</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/11</TD>
+<TD class="t3n1">201</TD>
+<TD class="t3n1">810</TD>
+<TD class="t3n1">1,011</TD>
+<TD class="t3r1">-609</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/08</TD>
+<TD class="t3n1">108</TD>
+<TD class="t3n1">101</TD>
+<TD class="t3n1">209</TD>
+<TD class="t3n1">6</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/07</TD>
+<TD class="t3n1">613</TD>
+<TD class="t3n1">461</TD>
+<TD class="t3n1">1,074</TD>
+<TD class="t3n1">152</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/06</TD>
+<TD class="t3n1">126</TD>
+<TD class="t3n1">59</TD>
+<TD class="t3n1">185</TD>
+<TD class="t3n1">67</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/05</TD>
+<TD class="t3n1">106</TD>
+<TD class="t3n1">16</TD>
+<TD class="t3n1">122</TD>
+<TD class="t3n1">90</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/04</TD>
+<TD class="t3n1">1,010</TD>
+<TD class="t3n1">860</TD>
+<TD class="t3n1">1,871</TD>
+<TD class="t3n1">150</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/08/01</TD>
+<TD class="t3n1">1,021</TD>
+<TD class="t3n1">768</TD>
+<TD class="t3n1">1,790</TD>
+<TD class="t3n1">253</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/31</TD>
+<TD class="t3n1">43</TD>
+<TD class="t3n1">50</TD>
+<TD class="t3n1">94</TD>
+<TD class="t3r1">-7</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/30</TD>
+<TD class="t3n1">161</TD>
+<TD class="t3n1">264</TD>
+<TD class="t3n1">425</TD>
+<TD class="t3r1">-103</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/29</TD>
+<TD class="t3n1">88</TD>
+<TD class="t3n1">176</TD>
+<TD class="t3n1">263</TD>
+<TD class="t3r1">-88</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/28</TD>
+<TD class="t3n1">54</TD>
+<TD class="t3n1">1,078</TD>
+<TD class="t3n1">1,132</TD>
+<TD class="t3r1">-1,024</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/25</TD>
+<TD class="t3n1">65</TD>
+<TD class="t3n1">813</TD>
+<TD class="t3n1">878</TD>
+<TD class="t3r1">-748</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/24</TD>
+<TD class="t3n1">19</TD>
+<TD class="t3n1">110</TD>
+<TD class="t3n1">129</TD>
+<TD class="t3r1">-91</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/23</TD>
+<TD class="t3n1">733</TD>
+<TD class="t3n1">144</TD>
+<TD class="t3n1">877</TD>
+<TD class="t3n1">589</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/22</TD>
+<TD class="t3n1">962</TD>
+<TD class="t3n1">553</TD>
+<TD class="t3n1">1,515</TD>
+<TD class="t3n1">410</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/21</TD>
+<TD class="t3n1">1,089</TD>
+<TD class="t3n1">8</TD>
+<TD class="t3n1">1,097</TD>
+<TD class="t3n1">1,081</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/18</TD>
+<TD class="t3n1">169</TD>
+<TD class="t3n1">290</TD>
+<TD class="t3n1">459</TD>
+<TD class="t3r1">-121</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/17</TD>
+<TD class="t3n1">778</TD>
+<TD class="t3n1">68</TD>
+<TD class="t3n1">845</TD>
+<TD class="t3n1">710</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/16</TD>
+<TD class="t3n1">422</TD>
+<TD class="t3n1">174</TD>
+<TD class="t3n1">597</TD>
+<TD class="t3n1">248</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/15</TD>
+<TD class="t3n1">576</TD>
+<TD class="t3n1">106</TD>
+<TD class="t3n1">683</TD>
+<TD class="t3n1">470</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/14</TD>
+<TD class="t3n1">541</TD>
+<TD class="t3n1">41</TD>
+<TD class="t3n1">582</TD>
+<TD class="t3n1">500</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/11</TD>
+<TD class="t3n1">676</TD>
+<TD class="t3n1">469</TD>
+<TD class="t3n1">1,145</TD>
+<TD class="t3n1">207</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/10</TD>
+<TD class="t3n1">5</TD>
+<TD class="t3n1">213</TD>
+<TD class="t3n1">218</TD>
+<TD class="t3r1">-208</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/09</TD>
+<TD class="t3n1">189</TD>
+<TD class="t3n1">249</TD>
+<TD class="t3n1">438</TD>
+<TD class="t3r1">-60</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/08</TD>
+<TD class="t3n1">291</TD>
+<TD class="t3n1">6</TD>
+<TD class="t3n1">297</TD>
+<TD class="t3n1">285</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/07</TD>
+<TD class="t3n1">637</TD>
+<TD class="t3n1">6</TD>
+<TD class="t3n1">643</TD>
+<TD class="t3n1">631</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/04</TD>
+<TD class="t3n1">70</TD>
+<TD class="t3n1">16</TD>
+<TD class="t3n1">86</TD>
+<TD class="t3n1">53</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/03</TD>
+<TD class="t3n1">28</TD>
+<TD class="t3n1">214</TD>
+<TD class="t3n1">242</TD>
+<TD class="t3r1">-186</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/02</TD>
+<TD class="t3n1">56</TD>
+<TD class="t3n1">175</TD>
+<TD class="t3n1">231</TD>
+<TD class="t3r1">-119</TD>
+</tr>
+<tr>
+<TD class="t4n0">2025/07/01</TD>
+<TD class="t3n1">374</TD>
+<TD class="t3n1">419</TD>
+<TD class="t3n1">793</TD>
+<TD class="t3r1">-45</TD>
+</tr>
+</table>
+</TD></TR>
+<TR><TD valign="top" class="t3t1" colspan="2">期間累計買賣超張數： 4,040</font></TD></TR>
+</table>
+</td></tr></table>
+</form>
+<script language="javascript"><!--
+function goA()
+{
+var i = document.F.D.selectedIndex;
+i = document.F.D.options[i].value;
+if (i > 0) {
+self.location = '/z/zc/zco/zco0/zco0.djhtm?a=2330&BHID=9200&b=9200&C='+i;
+}
+}
+function goB()
+{
+	if (CheckDate()){ 	
+	var bDate = document.F.bDate.value;		//起始日期 
+	var eDate = document.F.eDate.value;	    //結束日期 
+	}
+self.location = '/z/zc/zco/zco0/zco0.djhtm?A=2330&BHID=9200&b=9200&C=0&D=' + bDate + '&E=' + eDate + '&ver=V3';
+}
+//--></script>
+
+<script language="JavaScript"><!--
+    var $DJWebGraph1;
+    var sRenderTo = 'SysJustWebGraphDIV';
+    
+    $(document).ready(function () {
+        if (!!$DJWebGraph) {
+			$DJWebGraph1 = new $DJWebGraph();
+        		
+            $DJWebGraph1.CreateGraphObject({
+                'CanvasClass': 'canvas', //表示為複合式圖形
+                'ID': 'ZCO',
+                'Width': '490',
+                'Height': [['120'], ['140']],
+                'RenderTo': sRenderTo,
+                'Type': [['Trend:R'], ['Histogram']],
+                'Title': [['台積電' + '股價'], ['買賣超']],
+                'Unit': [['元'], ['張']],
+                'LineColor': [['ea6977'], ['2882D5']],
+                'BgColor': 'FFFFFF',
+                'Mark': 'none',
+                'Volumn': '0709,0713,0714,0715,0716,0717,0720,0721,0722,0723,0724,0727,0728,0729,0730,0731,0803,0804,0805,0806,0807,0810,0811,0812,0813,0814,0817,0818,0819,0820,0821,0824,0825,0826,0827,0828,0831,0901,0902,0903,0904,0907,0908,0909,0910 2415,2440,2420,2440,2470,2290,2320,2410,2400,2405,2350,2350,2280,2200,2205,2425,2370,2320,2405,2365,2370,2380,2395,2415,2435,2395,2400,2380,2350,2375,2410,2375,2400,2415,2410,2420,2405,2440,2385,2390,2410,2460,2470,2465,2450 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0'
+            })
+        }
+
+		GetBcdData('0709,0713,0714,0715,0716,0717,0720,0721,0722,0723,0724,0727,0728,0729,0730,0731,0803,0804,0805,0806,0807,0810,0811,0812,0813,0814,0817,0818,0819,0820,0821,0824,0825,0826,0827,0828,0831,0901,0902,0903,0904,0907,0908,0909,0910 2415,2440,2420,2440,2470,2290,2320,2410,2400,2405,2350,2350,2280,2200,2205,2425,2370,2320,2405,2365,2370,2380,2395,2415,2435,2395,2400,2380,2350,2375,2410,2375,2400,2415,2410,2420,2405,2440,2385,2390,2410,2460,2470,2465,2450 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0');
+        
+    });
+
+    function GetBcdData(data) {
+		if (data == '無資料'){
+			$DJWebGraph1.SetPoster("無資料");
+		}else{
+			if (!!data.length) {
+				var arrData = data.split(' ');
+				var X = arrData[0];
+				var ArrY = [
+				[arrData[1]], [arrData[2]]
+				];
+
+				$DJWebGraph1.SetGraphBcd({ 'X': X, 'Y': ArrY });
+			}
+		}
+    }
+
+    // 切選 券商公司List 
+    function GoPage() {
+    	var sUrl = '/z/zc/zco/zco0/zco0.djhtm?a=2330';
+
+    	var sFrmObj = document.F;
+    	var sA = sFrmObj.sel_Broker.options[sFrmObj.sel_Broker.selectedIndex].value;
+    	var sB = sFrmObj.sel_BrokerBranch.options[sFrmObj.sel_BrokerBranch.selectedIndex].value;
+    	//sB = toHex_js(sB);
+
+    	sUrl = sUrl + '&BHID=' + sA + '&b=' + sB;
+    	//console.log(sUrl);
+    	document.location.href = sUrl;
+    }
+
+
+// --></script>
+<script language="javascript"><!--
+if(typeof(ContentCenterEnd) == 'function'){ 	ContentCenterEnd();
+ } 
+//--></script>
+</td><td valign="top" align="right">
+<script language="javascript" src="/z/js/SR.js"></script>
+</td></tr>
+<tr><td colspan="3" valign="top">
+<script language="javascript" src="/z/js/SD.js"></script>
+</td></tr></table>
+</div>
+</body>
+</html>
