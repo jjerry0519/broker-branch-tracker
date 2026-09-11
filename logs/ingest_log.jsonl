@@ -8,3 +8,5 @@
 {"date": "2026-09-09", "mode": "daily", "leg": "shard", "status": "ok", "shard_stocks": 98, "dates_written": 33, "row_count": 550582, "failed": [], "started_at": "2026-09-10T14:53:05.307356+00:00", "finished_at": "2026-09-10T15:33:16.765354+00:00"}
 {"date": "2026-09-10", "mode": "backfill", "leg": "backfill 1/24", "status": "ok", "shard_stocks": 82, "dates_written": 9, "row_count": 13939, "failed": [], "started_at": "2026-09-11T06:17:15.543091+00:00", "finished_at": "2026-09-11T06:37:56.198278+00:00"}
 {"mode": "compact", "status": "ok", "dates_compacted": 315, "row_count": 4639927, "started_at": "2026-09-11T10:13:16.119745+00:00", "finished_at": "2026-09-11T10:22:17.987097+00:00"}
+{"date": "2026-09-10", "mode": "daily", "leg": "sweep", "status": "ok", "stock_count": 1951, "row_count": 53109, "failed": [], "started_at": "2026-09-11T14:31:10.197071+00:00", "finished_at": "2026-09-11T14:32:16.858516+00:00"}
+{"date": "2026-09-10", "mode": "daily", "leg": "shard", "status": "ok", "shard_stocks": 98, "dates_written": 34, "row_count": 1556671, "failed": [], "started_at": "2026-09-11T14:31:10.197071+00:00", "finished_at": "2026-09-11T15:06:00.189999+00:00"}
