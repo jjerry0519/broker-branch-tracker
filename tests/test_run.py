@@ -102,53 +102,80 @@ def test_merge_and_upload_local_dedups_and_indexes(tmp_path, monkeypatch):
     assert manifest["days"][d]["rows"]["flows"] == 2
 
 
-def test_merge_and_upload_staging_mode_writes_shard_file_no_manifest(tmp_path, monkeypatch):
+def test_stage_flush_writes_one_file_pair_covering_every_date(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    d = "2026-08-15"
-    by_date = {d: [BranchFlow(d, "twse", "2330", "9200", "富邦", 5000, 0, 5000, 0.0)]}
-    manifest = {"days": {}}
+    by_date = {
+        "2026-08-15": [BranchFlow("2026-08-15", "twse", "2330", "9200", "富邦",
+                                  5000, 0, 5000, 0.0)],
+        "2025-07-01": [BranchFlow("2025-07-01", "twse", "2330", "1440", "美林",
+                                  1000, 0, 1000, 0.0)],
+    }
 
-    counts = run._merge_and_upload(by_date, repo="", manifest=manifest,
-                                   stage_tag="s3-20")
+    n = run._stage_flush(by_date, ["2330"], "2026-09-09", repo="",
+                         stage_tag="s3-24", flush_idx=7)
 
-    assert counts == {d: 1}
-    assert (tmp_path / "out" / f"{d}__bfs3-20.parquet").exists()
-    assert not (tmp_path / "out" / f"{d}.parquet").exists()
-    assert manifest == {"days": {}}                    # staging never touches manifest
+    assert n == 2
+    data_path = tmp_path / "out" / "data_s3-24_00007.parquet"
+    state_path = tmp_path / "out" / "state_s3-24_00007.json"
+    assert data_path.exists() and state_path.exists()
+    from ingest.storage import read_flows
+    rows = read_flows(str(data_path))
+    assert {r.date for r in rows} == {"2026-08-15", "2025-07-01"}  # one file, both dates
+    import json
+    assert json.loads(state_path.read_text("utf-8")) == {
+        "target": "2026-09-09", "stocks": ["2330"]}
 
 
-def test_compact_folds_staging_into_canonical(tmp_path, monkeypatch):
+def test_compact_folds_staging_data_and_state(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    d = "2026-08-15"
-    (tmp_path / "out").mkdir()
-    # a canonical file with one row + a staging file with a different branch
+    d1, d2 = "2026-08-15", "2026-09-02"
     from ingest.storage import write_parquet as _wp
-    _wp([BranchFlow(d, "twse", "2330", "9200", "富邦", 1000, 0, 1000, 0.0)],
-        str(tmp_path / "canon.parquet"))
-    _wp([BranchFlow(d, "twse", "2330", "1440", "美林", 2000, 0, 2000, 0.0)],
-        str(tmp_path / "stage.parquet"))
+    # staging: one flush's worth, spanning two months
+    _wp([BranchFlow(d1, "twse", "2330", "1440", "美林", 2000, 0, 2000, 0.0),
+        BranchFlow(d2, "twse", "2330", "1440", "美林", 500, 0, 500, 0.0)],
+        str(tmp_path / "stage_data.parquet"))
+    (tmp_path / "stage_state.json").write_text(
+        '{"target": "2026-09-09", "stocks": ["2330"]}', encoding="utf-8")
+    # an existing canonical file for d1 with a different branch (must survive the merge)
+    _wp([BranchFlow(d1, "twse", "2330", "9200", "富邦", 1000, 0, 1000, 0.0)],
+        str(tmp_path / "canon_d1.parquet"))
 
-    monkeypatch.setattr(run, "_data_months", lambda **k: ["2026-08"])
-    monkeypatch.setattr(run, "list_release_assets",
-                        lambda tag, **k: [f"{d}.parquet", f"{d}__bfs1-4.parquet"])
+    monkeypatch.setattr(run, "list_release_assets", lambda tag, **k: (
+        ["data_s1-4_00001.parquet", "state_s1-4_00001.json"]
+        if tag == run._STAGING_TAG else
+        ([f"{d1}.parquet"] if tag == "data-2026-08" else [])))
+
+    files = {"data_s1-4_00001.parquet": tmp_path / "stage_data.parquet",
+            "state_s1-4_00001.json": tmp_path / "stage_state.json",
+            f"{d1}.parquet": tmp_path / "canon_d1.parquet"}
 
     def fake_dl(tag, fname, dest, **k):
-        src = tmp_path / ("canon.parquet" if fname == f"{d}.parquet" else "stage.parquet")
         out = tmp_path / dest / fname
-        out.write_bytes(src.read_bytes())
+        out.write_bytes(files[fname].read_bytes())
         return str(out)
 
-    uploaded, deleted = [], []
+    uploaded, deleted, saved_state = [], [], []
     monkeypatch.setattr(run, "download_asset", fake_dl)
-    monkeypatch.setattr(run, "upload_assets", lambda tag, paths, **k: uploaded.extend(paths))
+    monkeypatch.setattr(run, "upload_assets", lambda tag, paths, **k: uploaded.append((tag, paths)))
     monkeypatch.setattr(run, "delete_asset", lambda tag, fn, **k: deleted.append(fn))
+    monkeypatch.setattr(run, "load_state", lambda: {})
+    monkeypatch.setattr(run, "save_state", lambda st, *a: saved_state.append(st))
 
     manifest: dict = {"days": {}}
-    counts = run._compact(repo="r", manifest=manifest, month="2026-08")
+    counts = run._compact(repo="r", manifest=manifest)
 
-    assert counts == {d: 2}                            # both branches survived
-    assert deleted == [f"{d}__bfs1-4.parquet"]         # staging removed
-    assert manifest["days"][d]["rows"]["flows"] == 2
+    assert counts == {d1: 2, d2: 1}                     # d1: 富邦(existing) + 美林(staged)
+    assert saved_state == [{"2330": "2026-09-09"}]       # state delta applied via mark_done
+    assert set(deleted) == {"data_s1-4_00001.parquet", "state_s1-4_00001.json"}
+    assert manifest["days"][d1]["rows"]["flows"] == 2
+    assert manifest["days"][d2]["rows"]["flows"] == 1
+
+
+def test_compact_no_staging_is_a_noop(monkeypatch):
+    monkeypatch.setattr(run, "list_release_assets", lambda tag, **k: [])
+    manifest: dict = {"days": {}}
+    assert run._compact(repo="r", manifest=manifest) == {}
+    assert manifest == {"days": {}}
 
 
 # --------------------------------------------------------------------------- #

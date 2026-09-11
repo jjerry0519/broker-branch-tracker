@@ -1,16 +1,14 @@
 name: compact
 
-# Fold every <date>__bf*.parquet backfill-staging asset into its canonical
-# <date>.parquet (dedup union) and delete the staging files. Run once after all
-# backfill shards finish; safe to re-run.
+# Folds every backfill checkpoint staged on the shared `backfill-staging`
+# release into the canonical <date>.parquet day files (dedup union) and
+# refresh_state.json, then deletes the staging assets. Run once, after every
+# backfill.yml shard has finished. Safe to re-run (a no-op once staging is
+# empty). This is the ONLY step that commits manifest.json / refresh_state.json
+# for backfilled data -- one serialized job, no concurrent-write races.
 
 on:
-  workflow_dispatch:
-    inputs:
-      month:
-        description: "Only compact data-<YYYY-MM> (empty = every data-* release)"
-        type: string
-        default: ""
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -35,14 +33,14 @@ jobs:
       - run: pip install -r requirements.txt
 
       - name: Compact staging -> canonical
-        run: python -m ingest.run --mode compact --month "${{ inputs.month }}"
+        run: python -m ingest.run --mode compact
 
-      - name: Commit manifest / log
+      - name: Commit manifest / refresh state / log
         if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- manifest.json logs 2>/dev/null || true
+          git add -A -- manifest.json refresh_state.json logs 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "nothing to commit"
           else

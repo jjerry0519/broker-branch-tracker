@@ -24,7 +24,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import re
 import sys
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -171,28 +170,20 @@ def _run_shard(client: httpx.Client, shard: list[Stock], branches: list[tuple[st
 
 
 def _merge_and_upload(by_date: dict[str, list[BranchFlow]], *, repo: str,
-                      manifest: dict, stage_tag: str = "") -> dict[str, int]:
-    """For each affected date, write a ``<date>.parquet`` day-partition and
-    upload it. Returns ``{date: row_count}``.
-
-    Default (``stage_tag`` empty): download the existing partition, append, dedup
-    on ``(date, stock, branch)``, re-upload -- the single daily job owns the
-    canonical file, so this is race-free. Also updates ``manifest``.
-
-    ``stage_tag`` set (backfill): write ``<date>__bf<tag>.parquet`` with *only*
-    this shard's rows, no download/merge -- many backfill shards run in parallel,
-    each owning its own staging files; ``--mode compact`` folds them in later.
-    The manifest is left for compaction to update.
+                      manifest: dict) -> dict[str, int]:
+    """Daily path only: for each affected date, download the existing
+    ``<date>.parquet``, append, dedup on ``(date, stock, branch)``, re-upload.
+    Race-free because exactly one daily job runs at a time. Updates ``manifest``.
+    Returns ``{date: row_count}``.
     """
     _WORK.mkdir(exist_ok=True)
     counts: dict[str, int] = {}
     for date_iso, new_flows in sorted(by_date.items()):
         canon = f"{date_iso}.parquet"
-        fname = f"{date_iso}__bf{stage_tag}.parquet" if stage_tag else canon
-        path = str(_WORK / fname)
+        path = str(_WORK / canon)
         tag = release_tag(date_iso)
         existing: list[BranchFlow] = []
-        if repo and not stage_tag:
+        if repo:
             got = download_asset(tag, canon, str(_WORK), repo=repo)
             if got:
                 existing = read_flows(got)
@@ -201,8 +192,6 @@ def _merge_and_upload(by_date: dict[str, list[BranchFlow]], *, repo: str,
         counts[date_iso] = n
         if repo:
             upload_assets(tag, [path], repo=repo)
-        if stage_tag:
-            continue
         _set_day(manifest, date_iso,
                  asset_url(tag, canon, repo=repo) if repo else path, n)
     return counts
@@ -219,53 +208,92 @@ def _set_day(manifest: dict, date_iso: str, url: str, n: int) -> None:
     manifest["updated"] = _now()
 
 
-def _compact(*, repo: str, manifest: dict, month: str = "") -> dict[str, int]:
-    """Fold every ``<date>__bf*.parquet`` staging asset into its canonical
-    ``<date>.parquet`` (dedup union), then delete the staging assets. Scans all
-    ``data-YYYY-MM`` releases, or just ``data-<month>`` when ``month`` is given.
-    Returns ``{date: final_row_count}``.
+_STAGING_TAG = "backfill-staging"
+
+
+def _stage_flush(by_date: dict[str, list[BranchFlow]], done_ids: list[str],
+                 target: str, *, repo: str, stage_tag: str, flush_idx: int) -> int:
+    """Backfill checkpoint: pack this flush's rows -- however many months they
+    span -- into ONE parquet, and the stocks it finished into ONE small JSON,
+    uploaded to a single shared ``backfill-staging`` release (~2 API calls per
+    flush, not one per affected date -- a per-date design made 24 parallel
+    shards exhaust the token's 5000/hr quota in minutes on 2026-09-11).
+
+    No local ``manifest.json`` / ``refresh_state.json`` write and no git commit
+    here: many shards run at once and a git-level merge of those shared files
+    is exactly as racy as the upload was. ``--mode compact`` (single job, run
+    once after every shard finishes) folds all staging into the canonical day
+    files and ``refresh_state.json`` in one serialized pass. Returns the row
+    count staged.
     """
     _WORK.mkdir(exist_ok=True)
-    months = [month] if month else _data_months(repo=repo)
+    flows = [f for fl in by_date.values() for f in fl]
+    data_path = str(_WORK / f"data_{stage_tag}_{flush_idx:05d}.parquet")
+    state_path = str(_WORK / f"state_{stage_tag}_{flush_idx:05d}.json")
+    n = write_parquet(flows, data_path)
+    with open(state_path, "w", encoding="utf-8") as fh:
+        json.dump({"target": target, "stocks": done_ids}, fh)
+    if repo:
+        upload_assets(_STAGING_TAG, [data_path, state_path], repo=repo)
+    return n
+
+
+def _compact(*, repo: str, manifest: dict, month: str = "") -> dict[str, int]:
+    """Fold every staged backfill flush on ``backfill-staging`` into the
+    canonical per-day partitions (dedup union) and ``refresh_state.json``, then
+    delete the staging assets. ``month`` is accepted for CLI symmetry but has no
+    effect -- staging is not month-partitioned (see ``_stage_flush``). Returns
+    ``{date: final_row_count}``.
+    """
+    _WORK.mkdir(exist_ok=True)
+    assets = list_release_assets(_STAGING_TAG, repo=repo)
+    data_assets = sorted(a for a in assets if a.startswith("data_"))
+    state_assets = sorted(a for a in assets if a.startswith("state_"))
+    if not data_assets and not state_assets:
+        return {}
+
+    state = load_state()
+    for sa in state_assets:
+        got = download_asset(_STAGING_TAG, sa, str(_WORK), repo=repo)
+        if not got:
+            continue
+        with open(got, encoding="utf-8") as fh:
+            delta = json.load(fh)
+        state = mark_done(state, delta.get("stocks", []), delta.get("target", ""))
+    save_state(state)
+
+    by_date: dict[str, list[BranchFlow]] = defaultdict(list)
+    for da in data_assets:
+        got = download_asset(_STAGING_TAG, da, str(_WORK), repo=repo)
+        if not got:
+            continue
+        for f in read_flows(got):
+            by_date[f.date].append(f)
+
+    by_tag: dict[str, list[str]] = defaultdict(list)
+    for date_iso in by_date:
+        by_tag[release_tag(date_iso)].append(date_iso)
+
     counts: dict[str, int] = {}
-    for mo in months:
-        tag = f"data-{mo}"
-        assets = list_release_assets(tag, repo=repo)
-        staged: dict[str, list[str]] = defaultdict(list)
-        for a in assets:
-            m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})__bf.*\.parquet", a)
-            if m:
-                staged[m.group(1)].append(a)
-        for date_iso, stage_files in sorted(staged.items()):
+    for tag, dates in sorted(by_tag.items()):
+        tag_assets = set(list_release_assets(tag, repo=repo))   # 1 call/month
+        for date_iso in sorted(dates):
             canon = f"{date_iso}.parquet"
-            flows: list[BranchFlow] = []
-            if canon in assets:
+            existing: list[BranchFlow] = []
+            if canon in tag_assets:
                 got = download_asset(tag, canon, str(_WORK), repo=repo)
                 if got:
-                    flows += read_flows(got)
-            for sf in stage_files:
-                got = download_asset(tag, sf, str(_WORK), repo=repo)
-                if got:
-                    flows += read_flows(got)
-            merged = dedup_flows(flows)
+                    existing = read_flows(got)
+            merged = dedup_flows(existing + by_date[date_iso])
             path = str(_WORK / canon)
             n = write_parquet(merged, path)
             counts[date_iso] = n
             upload_assets(tag, [path], repo=repo)
-            for sf in stage_files:
-                delete_asset(tag, sf, repo=repo)
             _set_day(manifest, date_iso, asset_url(tag, canon, repo=repo), n)
+
+    for a in assets:
+        delete_asset(_STAGING_TAG, a, repo=repo)
     return counts
-
-
-def _data_months(*, repo: str) -> list[str]:
-    from ingest.storage import _gh_json
-    try:
-        rels = _gh_json("release", "list", "--repo", repo, "--json", "tagName")
-    except Exception:  # noqa: BLE001
-        return []
-    return sorted(r["tagName"][5:] for r in rels
-                  if r["tagName"].startswith("data-"))
 
 
 # --------------------------------------------------------------------------- #
@@ -401,17 +429,20 @@ def main(argv: list[str] | None = None) -> int:
             shard = _apply_shard(stocks, args.shard)
             legname = f"backfill {args.shard or 'all'}"
             stage_tag = "s" + (args.shard or "all").replace("/", "-")
+            flush_idx = {"n": 0}
 
             def _flush(bd: dict[str, list[BranchFlow]], done_ids: list[str],
                        _tag=stage_tag) -> None:
-                nonlocal state
-                c = _merge_and_upload(bd, repo=args.repo, manifest=manifest,
-                                      stage_tag=_tag)
-                total["dates"] += len(c)
-                total["rows"] += sum(c.values())
-                state = mark_done(state, done_ids, target)
-                save_state(state)
-                save_manifest(manifest)
+                # state (`state` var here) is read-only during backfill -- it is
+                # NOT advanced/saved locally. Each flush's progress is staged as
+                # its own file; `--mode compact` is the only thing that ever
+                # writes refresh_state.json / manifest.json for backfilled data,
+                # in one serialized pass after every shard is done.
+                flush_idx["n"] += 1
+                n = _stage_flush(bd, done_ids, target, repo=args.repo,
+                                 stage_tag=stage_tag, flush_idx=flush_idx["n"])
+                total["dates"] += 1
+                total["rows"] += n
 
             _, shard_failed = _run_shard(
                 client, shard, branches, state, target=target,

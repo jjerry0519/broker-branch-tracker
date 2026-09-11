@@ -3,11 +3,17 @@ name: backfill
 # One-time historical fill: one zco0 range request per (stock, branch) over the
 # last `months` months. The full matrix is ~1.5M cells, so run this once per
 # `shard` value (e.g. 1/24 .. 24/24) -- each shard is a contiguous slice of the
-# stock universe and writes its own <date>__bf<shard>.parquet staging assets, so
-# shards can run in parallel without clobbering each other. Checkpoints every
-# --flush-every stocks (default 10), so a timeout loses <10 stocks of work.
-# When every shard is done, run the `compact` workflow to fold staging into the
-# canonical <date>.parquet files.
+# stock universe. Every --flush-every stocks (default 10) it checkpoints ONE
+# data file + ONE small state file to the shared `backfill-staging` release
+# (not one file per date -- that burned the token's whole 5000/hr API quota
+# within minutes on 2026-09-11 with 24 shards running at once).
+#
+# Shards do NOT commit anything to the code repo -- 20+ parallel `git commit +
+# rebase + push` against the same manifest.json/refresh_state.json is exactly
+# as racy as the old per-date uploads were (also failed on 2026-09-11: rebase
+# conflicts). Only `compact.yml` (a single serialized job, run once after every
+# shard finishes) folds staging into the canonical day files and commits
+# manifest.json / refresh_state.json.
 
 on:
   workflow_dispatch:
@@ -26,7 +32,7 @@ on:
         default: "0"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: backfill-${{ inputs.shard }}
@@ -53,17 +59,3 @@ jobs:
         run: |
           python -m ingest.run --mode backfill \
             --shard "${{ inputs.shard }}" --months "${{ inputs.months }}"
-
-      - name: Commit manifest / log / refresh state
-        if: always()
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- manifest.json refresh_state.json logs 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "nothing to commit"
-          else
-            git commit -m "data: backfill ${{ inputs.shard }} $(date -u +%F) [skip ci]"
-            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-            git push
-          fi
