@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pyarrow as pa
@@ -79,6 +80,23 @@ def _gh(*args: str) -> None:
     subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
 
 
+def _gh_retrying(*args: str, attempts: int = 4) -> None:
+    """``_gh`` with retry/backoff -- many parallel backfill shards hit the same
+    release concurrently and occasionally collide with a transient GitHub API
+    conflict (not the permanent "already exists" case, which callers handle
+    themselves)."""
+    last: subprocess.CalledProcessError | None = None
+    for i in range(attempts):
+        try:
+            _gh(*args)
+            return
+        except subprocess.CalledProcessError as e:
+            last = e
+            if i < attempts - 1:
+                time.sleep(1.5 * (i + 1))
+    raise last  # type: ignore[misc]
+
+
 def _gh_json(*args: str):
     """Run ``gh <args>`` expecting JSON on stdout; return the parsed value."""
     out = subprocess.run(
@@ -92,12 +110,21 @@ def upload_assets(tag: str, paths: list[str], *, repo: str) -> None:
 
     Creates the release first if it does not exist, then uploads with
     ``--clobber`` so re-runs overwrite same-named assets.
+
+    Tolerant of the create racing another process (many parallel backfill
+    shards can all reach for the same month's release at once): a "create"
+    that fails because the tag now exists is swallowed, not raised.
     """
     existing = _gh_json("release", "list", "--repo", repo, "--json", "tagName")
     if not any(r["tagName"] == tag for r in existing):
-        _gh("release", "create", tag, "--repo", repo,
-            "--title", tag, "--notes", f"broker-branch data {tag}")
-    _gh("release", "upload", tag, *paths, "--repo", repo, "--clobber")
+        try:
+            _gh("release", "create", tag, "--repo", repo,
+                "--title", tag, "--notes", f"broker-branch data {tag}")
+        except subprocess.CalledProcessError as e:
+            blob = f"{e.stderr or ''}{e.stdout or ''}".lower()
+            if "already exists" not in blob and "already_exists" not in blob:
+                raise
+    _gh_retrying("release", "upload", tag, *paths, "--repo", repo, "--clobber")
 
 
 def download_asset(tag: str, filename: str, dest_dir: str, *, repo: str) -> str | None:
