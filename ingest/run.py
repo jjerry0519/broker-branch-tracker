@@ -244,13 +244,28 @@ def _compact(*, repo: str, manifest: dict, month: str = "") -> dict[str, int]:
     delete the staging assets. ``month`` is accepted for CLI symmetry but has no
     effect -- staging is not month-partitioned (see ``_stage_flush``). Returns
     ``{date: final_row_count}``.
+
+    Two passes, both memory-bounded (holding everything from every staging file
+    in RAM at once crashed the 24-shard compact on 2026-09-11 -- silently, as a
+    runner "shutdown signal", almost certainly an OOM kill):
+
+    1. Each staging file's rows are split by date and written straight to
+       small, uniquely-named local fragments (``accum/<date>__NNNNN.parquet``)
+       -- one file in memory at a time, no read-modify-write, no O(n^2) growth.
+    2. Per date: read that date's fragments (a bounded slice -- one day's rows
+       across every shard, not the whole backfill), merge with the existing
+       canonical partition, dedup, upload, discard.
     """
     _WORK.mkdir(exist_ok=True)
+    accum_dir = _WORK / "accum"
+    accum_dir.mkdir(exist_ok=True)
+
     assets = list_release_assets(_STAGING_TAG, repo=repo)
     data_assets = sorted(a for a in assets if a.startswith("data_"))
     state_assets = sorted(a for a in assets if a.startswith("state_"))
     if not data_assets and not state_assets:
         return {}
+    print(f"compact: {len(data_assets)} data + {len(state_assets)} state staging files")
 
     state = load_state()
     for sa in state_assets:
@@ -260,21 +275,32 @@ def _compact(*, repo: str, manifest: dict, month: str = "") -> dict[str, int]:
         with open(got, encoding="utf-8") as fh:
             delta = json.load(fh)
         state = mark_done(state, delta.get("stocks", []), delta.get("target", ""))
+        Path(got).unlink(missing_ok=True)
     save_state(state)
+    print(f"compact: state merged ({len(state)} stocks)")
 
-    by_date: dict[str, list[BranchFlow]] = defaultdict(list)
-    for da in data_assets:
+    touched: set[str] = set()
+    for i, da in enumerate(data_assets, 1):
         got = download_asset(_STAGING_TAG, da, str(_WORK), repo=repo)
         if not got:
             continue
+        by_date_local: dict[str, list[BranchFlow]] = defaultdict(list)
         for f in read_flows(got):
-            by_date[f.date].append(f)
+            by_date_local[f.date].append(f)
+        Path(got).unlink(missing_ok=True)
+        for date_iso, rows in by_date_local.items():
+            write_parquet(rows, str(accum_dir / f"{date_iso}__{i:05d}.parquet"))
+            touched.add(date_iso)
+        if i % 25 == 0 or i == len(data_assets):
+            print(f"compact: split {i}/{len(data_assets)} staging files "
+                 f"-> {len(touched)} dates touched so far")
 
     by_tag: dict[str, list[str]] = defaultdict(list)
-    for date_iso in by_date:
+    for date_iso in touched:
         by_tag[release_tag(date_iso)].append(date_iso)
 
     counts: dict[str, int] = {}
+    done_dates = 0
     for tag, dates in sorted(by_tag.items()):
         tag_assets = set(list_release_assets(tag, repo=repo))   # 1 call/month
         for date_iso in sorted(dates):
@@ -284,15 +310,22 @@ def _compact(*, repo: str, manifest: dict, month: str = "") -> dict[str, int]:
                 got = download_asset(tag, canon, str(_WORK), repo=repo)
                 if got:
                     existing = read_flows(got)
-            merged = dedup_flows(existing + by_date[date_iso])
+            fragments: list[BranchFlow] = []
+            for frag in accum_dir.glob(f"{date_iso}__*.parquet"):
+                fragments += read_flows(str(frag))
+                frag.unlink(missing_ok=True)
+            merged = dedup_flows(existing + fragments)
             path = str(_WORK / canon)
             n = write_parquet(merged, path)
             counts[date_iso] = n
             upload_assets(tag, [path], repo=repo)
             _set_day(manifest, date_iso, asset_url(tag, canon, repo=repo), n)
+            done_dates += 1
+        print(f"compact: {tag} done ({done_dates}/{len(touched)} dates so far)")
 
     for a in assets:
         delete_asset(_STAGING_TAG, a, repo=repo)
+    print(f"compact: deleted {len(assets)} staging assets")
     return counts
 
 
