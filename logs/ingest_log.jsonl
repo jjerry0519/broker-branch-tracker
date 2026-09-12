@@ -10,3 +10,4 @@
 {"mode": "compact", "status": "ok", "dates_compacted": 315, "row_count": 4639927, "started_at": "2026-09-11T10:13:16.119745+00:00", "finished_at": "2026-09-11T10:22:17.987097+00:00"}
 {"date": "2026-09-10", "mode": "daily", "leg": "sweep", "status": "ok", "stock_count": 1951, "row_count": 53109, "failed": [], "started_at": "2026-09-11T14:31:10.197071+00:00", "finished_at": "2026-09-11T14:32:16.858516+00:00"}
 {"date": "2026-09-10", "mode": "daily", "leg": "shard", "status": "ok", "shard_stocks": 98, "dates_written": 34, "row_count": 1556671, "failed": [], "started_at": "2026-09-11T14:31:10.197071+00:00", "finished_at": "2026-09-11T15:06:00.189999+00:00"}
+{"mode": "compact", "status": "ok", "dates_compacted": 315, "row_count": 117357940, "started_at": "2026-09-12T02:24:52.784925+00:00", "finished_at": "2026-09-12T03:47:24.925060+00:00"}
