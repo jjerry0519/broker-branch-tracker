@@ -1,0 +1,9 @@
+# Streamlit Cloud reads requirements.txt from the same directory as the app's
+# entrypoint (app/streamlit_app.py) first -- kept separate from the root
+# requirements.txt so the daily-ingest CI doesn't install these.
+streamlit==1.40.2
+pandas==2.2.3
+duckdb==1.1.3
+pyarrow==18.1.0
+httpx==0.27.2
+yfinance==1.7.0
