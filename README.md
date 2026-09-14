@@ -5,7 +5,8 @@
 上傳到私有資料 repo `jjerry0519/broker-branch-tracker-data` 的 GitHub Releases（按月分包
 `data-YYYY-MM`），滾動保留 13 個月。純 `httpx`、無瀏覽器、無驗證碼 —— **電腦不需要開機**。
 
-查詢網頁（個股籌碼排行 / 個股 × 分點 FIFO 成本 / 分點總覽）為 Plan 2，另案處理，只讀我們的庫。
+查詢網頁（個股籌碼排行 / 個股 × 分點 FIFO 成本 / 分點總覽，`app/`，Streamlit）只讀我們自己的庫 ——
+見下方「查詢網頁」一節。
 
 > 架構演進：官方來源（TWSE BSR、TPEx brokerBS）在 GitHub-Actions runner IP 上被限速／被
 > Cloudflare 封鎖，無法滿足「免費＋不綁卡＋不開電腦」。改採 `.djhtm` 聚合器後三者同時成立。
@@ -72,6 +73,15 @@ broker-branch-tracker/
 │   ├── twse_client.py / twse_parse.py / captcha.py   # BSR：ddddocr 圖形驗證碼
 │   ├── tpex_client.py / tpex_parse.py                # brokerBS：patchright 過 Turnstile
 │   └── aggregate.py
+├── app/                        # 查詢網頁（Streamlit，只讀我們自己的資料庫）
+│   ├── streamlit_app.py       # 首頁
+│   ├── pages/                 # 個股籌碼／個股分點成本／分點總覽 三頁
+│   ├── data.py                # manifest 讀取、day-partition 下載快取、DuckDB 查詢
+│   ├── fifo.py                # FIFO 平均成本演算法（純函式）
+│   ├── close_price.py         # 歷史收盤價（yfinance，SQLite 永久快取）
+│   ├── lookup.py               # reference.db 模糊搜尋（股票／分點）
+│   ├── config.py               # secrets / 路徑設定
+│   └── requirements.txt       # streamlit / pandas / yfinance（獨立於根目錄，CI 不會裝）
 ├── tests/                     # 純函式 / mock transport；tests/fallback/ 需 requirements-fallback.txt
 ├── docs/specs/ · docs/superpowers/plans/
 ├── .github/workflows/
@@ -115,12 +125,48 @@ Secrets：`daily_ingest.yml` / `backfill.yml` 用 repo secret `DATA_REPO_TOKEN`�
 
 ---
 
-## FIFO 平均成本 — 免責聲明（Plan 2）
+## 查詢網頁
+
+三頁，皆只讀我們自己的私有資料庫（不打聚合站台）：
+
+| 頁面 | 功能 |
+|---|---|
+| 個股籌碼 | 搜股票 → 近 N 日（5/10/20/60）各分點買超/賣超排行、選定分點的每日累計走勢 |
+| 個股 × 分點成本 | 選股 + 選分點 + 選區間 → FIFO 估算平均成本、估計庫存、每日明細表、庫存曲線 |
+| 分點總覽 | 選分點 + 選區間 → 該分點期間內所有個股一覽（買超/賣超/淨/FIFO成本/估計庫存），候選逾 200 檔時只算 \|淨張數\| 前 200 大 |
+
+**資料存取**：`manifest.json`（公開 code repo，plain HTTPS）→ 依查詢所需日期，用 `GH_TOKEN`
+（對私有資料 repo 有讀權限的 PAT）並發下載對應的逐日 Parquet 到本機快取（`.cache/parquet/`，
+永久保存 —— 逐日檔一旦寫入不會變）→ DuckDB 查詢本機檔案。`st.cache_data` 額外快取 manifest（6
+小時 TTL）與已下載的檔案清單。
+
+**FIFO 收盤價**：`.djhtm` 的 `zco0` 只給逐日買賣張數、不含收盤價（歷史列 `close_price=0.0`）；
+`app/close_price.py` 另接 **Yahoo Finance**（`yfinance`，`.TW`/`.TWO`）取得歷史收盤，SQLite 永久
+快取（`.cache/close_cache.db`，同一天的收盤價不會變，查過不再重查）。
+
+**免責聲明（每個 FIFO 頁面逐字顯示）**：
 
 > 此為簡化估算：以每日買賣超 × 當日收盤價作為交易紀錄，並以 FIFO（先進先出）配對計算。
 > 券商分點買賣超為該分點多個帳戶淨額相抵後的結果，無法反映真實單筆成交價格，也看不到本工具
 > 涵蓋期間之前既有的部位。此數字僅供相對比較與趨勢觀察，**非真實成交均價**。
 
-`.djhtm` 的 `zco0` 提供逐日買賣張數但不含每日收盤價；Plan 2 會另接 TWSE/TPEx 歷史收盤價
-（或 `zco` 的站方均價估值）補齊 FIFO 所需價格。回補涵蓋約 15 個月，`had_oversell` 旗標仍會標示
-期初部位造成的偏差。
+### 本機執行
+
+```bash
+.venv/Scripts/pip install -r app/requirements.txt
+# 本機測試用的 secrets（.streamlit/ 已 gitignore，不會進 repo）
+mkdir .streamlit && echo 'GH_TOKEN = "<有讀私有資料repo權限的PAT>"' > .streamlit/secrets.toml
+.venv/Scripts/python -m streamlit run app/streamlit_app.py
+```
+
+### 部署到 Streamlit Community Cloud（免費）
+
+1. [share.streamlit.io](https://share.streamlit.io) 用 GitHub 帳號登入、授權存取
+   `jjerry0519/broker-branch-tracker`（public repo，授權時勾選它）。
+2. New app → repo 選 `jjerry0519/broker-branch-tracker`、branch `main`、
+   main file path `app/streamlit_app.py`。
+3. Advanced settings → Secrets，貼入：
+   ```toml
+   GH_TOKEN = "<對 broker-branch-tracker-data 有讀權限的 PAT>"
+   ```
+4. Deploy。免費方案：1 GB RAM、閒置後休眠（下次開啟約 30 秒喚醒）、可設 1 個私有 app。
