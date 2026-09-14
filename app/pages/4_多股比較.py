@@ -12,12 +12,14 @@ import streamlit as st
 from app import close_price, config, data, lookup, ui_common
 
 st.set_page_config(page_title="多股比較 | 台股分點籌碼追蹤", page_icon="📊", layout="wide")
-st.title("📊 多股比較")
-st.caption("同時比較多檔股票的全市場籌碼流向（所有分點加總），適合供應鏈／同業族群比對。")
+ui_common.inject_style()
+ui_common.page_header("📊", "多股比較",
+                      "同時比較多檔股票的全市場籌碼流向（所有分點加總），適合供應鏈／同業族群比對")
 
 MAX_STOCKS = 6
-q = st.text_input("股票清單（股號或名稱，逗號分隔）",
-                  placeholder="例如 2330, 2317, 3008, 2454")
+with st.container(border=True):
+    q = st.text_input("股票清單（股號或名稱，逗號分隔）",
+                      placeholder="例如 2330, 2317, 3008, 2454")
 if not q:
     st.stop()
 

@@ -17,13 +17,15 @@ from app.fifo import compute_fifo
 
 st.set_page_config(page_title="個股 × 分點成本 | 台股分點籌碼追蹤", page_icon="💰",
                    layout="wide")
-st.title("💰 個股 × 分點成本（FIFO 估算）")
+ui_common.inject_style()
+ui_common.page_header("💰", "個股 × 分點成本", "FIFO 估算特定分點在特定股票上的平均持股成本")
 
-col1, col2 = st.columns(2)
-with col1:
-    stock_id = ui_common.pick_stock()
-with col2:
-    branch_id = ui_common.pick_branch()
+with st.container(border=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        stock_id = ui_common.pick_stock()
+    with col2:
+        branch_id = ui_common.pick_branch()
 
 if not stock_id or not branch_id:
     st.stop()
@@ -35,15 +37,16 @@ if not all_dates:
     st.stop()
 
 default_start = all_dates[-60] if len(all_dates) >= 60 else all_dates[0]
-c1, c2 = st.columns(2)
-with c1:
-    start = st.date_input("起始日", value=dt.date.fromisoformat(default_start),
-                          min_value=dt.date.fromisoformat(all_dates[0]),
-                          max_value=dt.date.fromisoformat(all_dates[-1]))
-with c2:
-    end = st.date_input("結束日", value=dt.date.fromisoformat(all_dates[-1]),
-                        min_value=dt.date.fromisoformat(all_dates[0]),
-                        max_value=dt.date.fromisoformat(all_dates[-1]))
+with st.container(border=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        start = st.date_input("起始日", value=dt.date.fromisoformat(default_start),
+                              min_value=dt.date.fromisoformat(all_dates[0]),
+                              max_value=dt.date.fromisoformat(all_dates[-1]))
+    with c2:
+        end = st.date_input("結束日", value=dt.date.fromisoformat(all_dates[-1]),
+                            min_value=dt.date.fromisoformat(all_dates[0]),
+                            max_value=dt.date.fromisoformat(all_dates[-1]))
 
 dates = data.trading_dates(manifest, start=start.isoformat(), end=end.isoformat())
 if not dates:

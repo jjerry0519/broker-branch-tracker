@@ -8,5 +8,6 @@ __pycache__/
 .cache/
 out/
 close_cache.db
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 .claude/

@@ -17,9 +17,11 @@ from app.backtest import backtest_branch_buys, merge_results
 from app.fifo import compute_fifo
 
 st.set_page_config(page_title="分點總覽 | 台股分點籌碼追蹤", page_icon="🏢", layout="wide")
-st.title("🏢 分點總覽")
+ui_common.inject_style()
+ui_common.page_header("🏢", "分點總覽", "選定分點在期間內進出的所有個股，含絕對／相對大盤勝率回測")
 
-branch_id = ui_common.pick_branch()
+with st.container(border=True):
+    branch_id = ui_common.pick_branch()
 if not branch_id:
     st.stop()
 
@@ -30,15 +32,17 @@ if not all_dates:
     st.stop()
 
 default_start = all_dates[-20] if len(all_dates) >= 20 else all_dates[0]
-c1, c2 = st.columns(2)
-with c1:
-    start = st.date_input("起始日", value=dt.date.fromisoformat(default_start),
-                          min_value=dt.date.fromisoformat(all_dates[0]),
-                          max_value=dt.date.fromisoformat(all_dates[-1]))
-with c2:
-    end = st.date_input("結束日", value=dt.date.fromisoformat(all_dates[-1]),
-                        min_value=dt.date.fromisoformat(all_dates[0]),
-                        max_value=dt.date.fromisoformat(all_dates[-1]))
+with st.container(border=True):
+    st.markdown("**📅 查詢區間**")
+    c1, c2 = st.columns(2)
+    with c1:
+        start = st.date_input("起始日", value=dt.date.fromisoformat(default_start),
+                              min_value=dt.date.fromisoformat(all_dates[0]),
+                              max_value=dt.date.fromisoformat(all_dates[-1]))
+    with c2:
+        end = st.date_input("結束日", value=dt.date.fromisoformat(all_dates[-1]),
+                            min_value=dt.date.fromisoformat(all_dates[0]),
+                            max_value=dt.date.fromisoformat(all_dates[-1]))
 
 dates = data.trading_dates(manifest, start=start.isoformat(), end=end.isoformat())
 if not dates:
@@ -57,13 +61,15 @@ if len(candidates) >= TOP_CAP:
 # one query for every stock this branch touched (was: one query per candidate)
 histories = data.branch_history_multi(paths, branch_id)
 
-bc1, bc2 = st.columns(2)
-with bc1:
-    horizon = st.select_slider("回測：進場後幾個交易日看報酬", options=[5, 10, 20], value=5)
-with bc2:
-    entry_lag = st.select_slider(
-        "延遲進場天數（分點資料公布後才可能進場，預設隔天）",
-        options=[0, 1, 2, 3], value=1)
+with st.container(border=True):
+    st.markdown("**⚙️ 回測參數**")
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        horizon = st.select_slider("進場後幾個交易日看報酬", options=[5, 10, 20], value=5)
+    with bc2:
+        entry_lag = st.select_slider(
+            "延遲進場天數（分點資料公布後才可能進場，預設隔天）",
+            options=[0, 1, 2, 3], value=1)
 
 # 大盤基準（0050）：整個回測共用同一組收盤價，只抓一次，不放進每檔股票的迴圈裡
 _bench_dates = list(dates) + [all_dates[-1]]
@@ -113,21 +119,22 @@ for r in out_rows:
 
 st.subheader(f"🎯 {branch_id} 分點整體勝率（訊號後第 {entry_lag} 個交易日進場，"
             f"再持有 {horizon} 個交易日）")
-b1, b2 = st.columns(2)
-with b1:
-    st.markdown("**絕對報酬**")
-    st.metric("買超訊號數", f"{merged_bt.n_signals:,}（可計算 {merged_bt.n_computable:,}）")
-    st.metric("勝率", f"{merged_bt.win_rate * 100:.1f}%"
-             if merged_bt.win_rate is not None else "—")
-    st.metric("平均報酬", f"{merged_bt.avg_return * 100:+.2f}%"
-             if merged_bt.avg_return is not None else "—")
-with b2:
-    st.markdown(f"**相對 0050（大盤基準）**")
-    st.metric("可比較訊號數", f"{merged_bt.n_excess_computable:,}")
-    st.metric("贏大盤機率", f"{merged_bt.win_rate_excess * 100:.1f}%"
-             if merged_bt.win_rate_excess is not None else "—")
-    st.metric("平均超額報酬", f"{merged_bt.avg_excess_return * 100:+.2f}%"
-             if merged_bt.avg_excess_return is not None else "—")
+with st.container(border=True):
+    b1, b2 = st.columns(2)
+    with b1:
+        st.markdown("**絕對報酬**")
+        st.metric("買超訊號數", f"{merged_bt.n_signals:,}（可計算 {merged_bt.n_computable:,}）")
+        st.metric("勝率", f"{merged_bt.win_rate * 100:.1f}%"
+                 if merged_bt.win_rate is not None else "—")
+        st.metric("平均報酬", f"{merged_bt.avg_return * 100:+.2f}%"
+                 if merged_bt.avg_return is not None else "—")
+    with b2:
+        st.markdown(f"**相對 0050（大盤基準）**")
+        st.metric("可比較訊號數", f"{merged_bt.n_excess_computable:,}")
+        st.metric("贏大盤機率", f"{merged_bt.win_rate_excess * 100:.1f}%"
+                 if merged_bt.win_rate_excess is not None else "—")
+        st.metric("平均超額報酬", f"{merged_bt.avg_excess_return * 100:+.2f}%"
+                 if merged_bt.avg_excess_return is not None else "—")
 st.caption(f"⚠️ {BACKTEST_DISCLAIMER}")
 
 df = pd.DataFrame(out_rows)

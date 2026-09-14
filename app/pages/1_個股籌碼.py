@@ -11,9 +11,11 @@ import streamlit as st
 from app import data, ui_common
 
 st.set_page_config(page_title="個股籌碼 | 台股分點籌碼追蹤", page_icon="📈", layout="wide")
-st.title("📈 個股籌碼")
+ui_common.inject_style()
+ui_common.page_header("📈", "個股籌碼", "搜尋股票，看近期各分點買賣超排行與單一分點走勢")
 
-stock_id = ui_common.pick_stock()
+with st.container(border=True):
+    stock_id = ui_common.pick_stock()
 if not stock_id:
     st.stop()
 
