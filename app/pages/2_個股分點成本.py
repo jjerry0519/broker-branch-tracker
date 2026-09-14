@@ -8,7 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import datetime as dt
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 from app import close_price, config, data, lookup, ui_common
 from app.fifo import compute_fifo
@@ -85,7 +87,21 @@ if result.trace:
         "當日累計FIFO成本": round(t.running_avg_cost, 2) if t.running_avg_cost else None,
         "超賣": "是" if t.oversold else "",
     } for t in result.trace])
-    st.line_chart(tdf.set_index("日期")["當日累計庫存(張)"])
+
+    st.subheader("股價 × 分點庫存 疊圖")
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Scatter(x=tdf["日期"], y=tdf["收盤價"], name="收盤價",
+                             line=dict(color="#1f77b4")), secondary_y=False)
+    fig.add_trace(go.Bar(x=tdf["日期"], y=tdf["當日累計庫存(張)"], name="累計庫存(張)",
+                         marker=dict(color="#ff7f0e"), opacity=0.35), secondary_y=True)
+    fig.update_yaxes(title_text="收盤價", secondary_y=False)
+    fig.update_yaxes(title_text="累計庫存（張）", secondary_y=True)
+    fig.update_layout(height=420, margin=dict(t=20, b=20),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02))
+    st.plotly_chart(fig, use_container_width=True)
+
     st.dataframe(tdf, hide_index=True, use_container_width=True)
+    ui_common.download_csv_button(
+        tdf, f"{stock_id}_{branch_id}_FIFO明細_{dates[0]}_{dates[-1]}.csv")
 
 ui_common.render_disclaimer()

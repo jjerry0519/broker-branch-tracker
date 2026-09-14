@@ -96,3 +96,11 @@ def pick_branch(label: str = "券商分點（代號或名稱）", *, key: str = 
 
 def render_disclaimer() -> None:
     st.caption(f"⚠️ {DISCLAIMER}")
+
+
+def download_csv_button(df, filename: str, *, label: str = "⬇️ 下載 CSV",
+                        key: str | None = None) -> None:
+    """utf-8-sig so Excel opens the Chinese column headers without mangling
+    them (plain utf-8 shows up as garbled text in Excel on Windows)."""
+    st.download_button(label, df.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=filename, mime="text/csv", key=key)

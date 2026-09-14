@@ -68,6 +68,10 @@ with c2:
     st.dataframe(df.sort_values("買賣超張").head(15)
                 .reset_index(drop=True), hide_index=True, use_container_width=True)
 
+ui_common.download_csv_button(
+    df.sort_values("買賣超張", ascending=False).reset_index(drop=True),
+    f"{stock_id}_分點籌碼_{dates[0]}_{dates[-1]}.csv", label="⬇️ 下載完整分點清單 CSV")
+
 st.divider()
 st.subheader("選定分點的每日累計買賣超")
 branch_options = {f"{r[0]} {r[1]}": r[0] for r in rows}
@@ -82,6 +86,10 @@ if picked:
         sdf = sdf.set_index("date")
         st.line_chart(sdf["累計買賣超張"])
         st.dataframe(sdf[["買賣超張", "累計買賣超張"]], use_container_width=True)
+        ui_common.download_csv_button(
+            sdf.reset_index()[["date", "買賣超張", "累計買賣超張"]],
+            f"{stock_id}_{branch_id}_每日買賣超_{dates[0]}_{dates[-1]}.csv",
+            label="⬇️ 下載此分點每日買賣超 CSV", key="dl_branch_series")
 
 ui_common.render_disclaimer()
 st.caption("券商分點買賣超彙整自第三方聚合站台，非交易所官方逐筆資料。")
