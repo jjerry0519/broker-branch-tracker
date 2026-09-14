@@ -66,6 +66,7 @@ rows = [(d, net, closes[d]) for d, net in series if d in closes]
 result = compute_fifo(rows)
 
 st.caption(f"統計區間：{dates[0]} ～ {dates[-1]}")
+st.caption(ui_common.rotation_note(stock_id))
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("FIFO 平均成本", f"{result.avg_cost:,.2f}" if result.avg_cost else "—")

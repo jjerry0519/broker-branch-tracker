@@ -18,6 +18,9 @@ import httpx
 MANIFEST_URL = (
     "https://raw.githubusercontent.com/{repo}/main/manifest.json"
 )
+REFRESH_STATE_URL = (
+    "https://raw.githubusercontent.com/{repo}/main/refresh_state.json"
+)
 _UA = "broker-branch-tracker-app/1.0"
 
 
@@ -33,6 +36,58 @@ def fetch_manifest(repo: str = "jjerry0519/broker-branch-tracker",
     finally:
         if own:
             client.close()
+
+
+def fetch_refresh_state(repo: str = "jjerry0519/broker-branch-tracker",
+                        *, client: httpx.Client | None = None) -> dict[str, str]:
+    """``{stock_id: refreshed_through_date}`` -- the rolling shard's own
+    bookkeeping (public code repo, no auth). A stock absent from this map has
+    never been rotated (highest priority -- sorts first, same as
+    ``ingest.schedule.next_shard``)."""
+    own = client is None
+    client = client or httpx.Client(timeout=20, headers={"User-Agent": _UA})
+    try:
+        r = client.get(REFRESH_STATE_URL.format(repo=repo))
+        if r.status_code == 404:
+            return {}
+        r.raise_for_status()
+        return r.json().get("refreshed_through", {})
+    finally:
+        if own:
+            client.close()
+
+
+def rotation_estimate(stock_id: str, state: dict[str, str], *,
+                      cycle_days: int = 20, today: str | None = None) -> dict:
+    """When this stock's turn in the 20-day rolling shard is expected.
+
+    Mirrors ``ingest.schedule.next_shard``'s ordering exactly (oldest
+    ``refreshed_through`` first, ties broken by stock id) so ``rank`` is which
+    position this stock holds in the queue and ``est_days`` = ``rank`` //
+    (stocks handled per day). This is an estimate, not a guarantee -- the
+    universe can shift day to day (new listings, delistings).
+    """
+    import datetime as _dt
+    today = today or _dt.date.today().isoformat()
+    universe = set(state) | {stock_id}
+    ordered = sorted(universe, key=lambda s: (state.get(s, ""), s))
+    rank = ordered.index(stock_id)
+    n = len(ordered)
+    per_day = max(1, -(-n // cycle_days))
+    est_days = rank // per_day
+    last_synced = state.get(stock_id, "")
+    try:
+        est_date = (_dt.date.fromisoformat(today) +
+                   _dt.timedelta(days=est_days)).isoformat()
+    except ValueError:
+        est_date = ""
+    return {
+        "last_synced": last_synced or None,
+        "rank": rank,
+        "universe_size": n,
+        "est_days": est_days,
+        "est_date": est_date,
+    }
 
 
 def trading_dates(manifest: dict, *, start: str | None = None,

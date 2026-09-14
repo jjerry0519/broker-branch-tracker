@@ -49,6 +49,24 @@ def latest_board_for_stock(stock_id: str):
     return data.latest_board_for_stock(Path(path) if path else None, stock_id)
 
 
+@st.cache_data(ttl=3600)
+def refresh_state() -> dict[str, str]:
+    return data.fetch_refresh_state(config.CODE_REPO)
+
+
+def rotation_note(stock_id: str) -> str:
+    """One-line note on when this stock's full daily detail was last synced and
+    when the rolling shard is expected to update it next."""
+    est = data.rotation_estimate(stock_id, refresh_state())
+    if est["last_synced"] is None:
+        return "此股票尚未被滾動排程處理過，預計很快會被排入（下一輪次）。"
+    if est["est_days"] <= 0:
+        return f"資料庫更新到 **{est['last_synced']}**，預計**今天或明天**就會補到最新。"
+    return (f"資料庫更新到 **{est['last_synced']}**，"
+           f"依目前排程預計約 **{est['est_days']} 天後（{est['est_date']}）** 補到最新"
+           f"（估計值，非保證）。")
+
+
 def pick_stock(label: str = "股票（股號或名稱）", *, key: str = "stock_q") -> str | None:
     q = st.text_input(label, key=key, placeholder="例如 2330 或 台積電")
     if not q:

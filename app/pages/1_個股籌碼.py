@@ -56,6 +56,7 @@ df["佔區間總量比重"] = (df["買賣超張"].abs() / total_abs * 100).round
 
 st.caption(f"統計區間：{dates[0]} ～ {dates[-1]}（{len(dates)} 個交易日，資料庫完整明細，"
           f"非僅前15大）")
+st.caption(ui_common.rotation_note(stock_id))
 
 c1, c2 = st.columns(2)
 with c1:

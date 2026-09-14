@@ -174,6 +174,56 @@ def test_latest_board_for_stock_missing_file_returns_empty(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# fetch_refresh_state / rotation_estimate
+# --------------------------------------------------------------------------- #
+def test_fetch_refresh_state():
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "updated": "x", "refreshed_through": {"2330": "2026-09-09"}})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as c:
+        assert data.fetch_refresh_state(client=c) == {"2330": "2026-09-09"}
+
+
+def test_fetch_refresh_state_missing_file_returns_empty():
+    with httpx.Client(transport=httpx.MockTransport(
+            lambda req: httpx.Response(404))) as c:
+        assert data.fetch_refresh_state(client=c) == {}
+
+
+def test_rotation_estimate_never_synced_is_top_of_queue():
+    state = {"2330": "2026-09-10", "2317": "2026-09-10"}
+    est = data.rotation_estimate("9999", state, cycle_days=20, today="2026-09-11")
+    assert est["last_synced"] is None
+    assert est["rank"] == 0                 # "" sorts before any real date
+    assert est["est_days"] == 0
+    assert est["est_date"] == "2026-09-11"
+
+
+def test_rotation_estimate_matches_next_shard_ordering():
+    from ingest.schedule import next_shard
+    state = {f"{i:04d}": d for i, d in enumerate(
+        ["2026-08-20", "2026-08-25", "2026-09-01", "2026-09-05", "2026-09-10"])}
+    stock_ids = list(state)
+    # the stock next_shard would pick first (cycle_days=5 -> 1/day) should rank 0
+    picked = next_shard(stock_ids, state, cycle_days=5)
+    est = data.rotation_estimate(picked[0], state, cycle_days=5, today="2026-09-11")
+    assert est["rank"] == 0 and est["est_days"] == 0
+
+
+def test_rotation_estimate_est_days_scales_with_rank_and_shard_size():
+    # 40 stocks, cycle_days=20 -> 2/day; a stock ranked 10th (0-indexed) should
+    # be expected on day 5
+    state = {f"{i:04d}": f"2026-08-{(i%28)+1:02d}" for i in range(40)}
+    ordered = sorted(state, key=lambda s: (state[s], s))
+    target_stock = ordered[10]
+    est = data.rotation_estimate(target_stock, state, cycle_days=20,
+                                 today="2026-09-11")
+    assert est["rank"] == 10
+    assert est["est_days"] == 10 // 2       # per_day = ceil(40/20) = 2
+    assert est["est_date"] == "2026-09-16"
+
+
+# --------------------------------------------------------------------------- #
 # DuckDB query helpers -- real Parquet fixtures, no mocking
 # --------------------------------------------------------------------------- #
 @pytest.fixture
