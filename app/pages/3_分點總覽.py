@@ -57,7 +57,18 @@ if len(candidates) >= TOP_CAP:
 # one query for every stock this branch touched (was: one query per candidate)
 histories = data.branch_history_multi(paths, branch_id)
 
-horizon = st.select_slider("勝率回測：買超後幾個交易日看報酬", options=[5, 10, 20], value=5)
+bc1, bc2 = st.columns(2)
+with bc1:
+    horizon = st.select_slider("回測：進場後幾個交易日看報酬", options=[5, 10, 20], value=5)
+with bc2:
+    entry_lag = st.select_slider(
+        "延遲進場天數（分點資料公布後才可能進場，預設隔天）",
+        options=[0, 1, 2, 3], value=1)
+
+# 大盤基準（0050）：整個回測共用同一組收盤價，只抓一次，不放進每檔股票的迴圈裡
+_bench_dates = list(dates) + [all_dates[-1]]
+bench_closes = close_price.get_closes(config.BENCHMARK_STOCK_ID, config.BENCHMARK_MARKET,
+                                      _bench_dates, db_path=config.CLOSE_DB)
 
 
 def _one(row: tuple[str, int, int, int]) -> dict:
@@ -73,17 +84,21 @@ def _one(row: tuple[str, int, int, int]) -> dict:
                                     db_path=config.CLOSE_DB)
     rows = [(d, n2, closes[d]) for d, n2 in series if d in closes]
     r = compute_fifo(rows)
-    bt = backtest_branch_buys(series, closes, all_dates, horizon_days=horizon)
+    bt = backtest_branch_buys(series, closes, all_dates, horizon_days=horizon,
+                              entry_lag_days=entry_lag, benchmark_closes=bench_closes)
     return {
         "股號": stock_id, "股名": name,
         "買超張": buy // 1000, "賣超張": sell // 1000, "淨張": net // 1000,
         "FIFO平均成本": round(r.avg_cost, 2) if r.avg_cost else None,
         "估計庫存(張)": r.est_inventory_shares // 1000,
         "超賣": "是" if r.had_oversell else "",
-        f"買超後{horizon}日勝率": (f"{bt.win_rate * 100:.0f}%"
-                              if bt.win_rate is not None else None),
-        f"買超後{horizon}日平均報酬": (f"{bt.avg_return * 100:+.1f}%"
-                                if bt.avg_return is not None else None),
+        f"勝率(絕對)": (f"{bt.win_rate * 100:.0f}%" if bt.win_rate is not None else None),
+        f"平均報酬(絕對)": (f"{bt.avg_return * 100:+.1f}%"
+                       if bt.avg_return is not None else None),
+        "勝率(贏大盤)": (f"{bt.win_rate_excess * 100:.0f}%"
+                    if bt.win_rate_excess is not None else None),
+        "平均超額報酬": (f"{bt.avg_excess_return * 100:+.1f}%"
+                    if bt.avg_excess_return is not None else None),
         "_bt": bt,
     }
 
@@ -96,12 +111,23 @@ merged_bt = merge_results([r["_bt"] for r in out_rows])
 for r in out_rows:
     del r["_bt"]
 
-st.subheader(f"🎯 {branch_id} 分點整體勝率（買超後 {horizon} 個交易日）")
-b1, b2, b3 = st.columns(3)
-b1.metric("買超訊號數", f"{merged_bt.n_signals:,}（可計算 {merged_bt.n_computable:,}）")
-b2.metric("勝率", f"{merged_bt.win_rate * 100:.1f}%" if merged_bt.win_rate is not None else "—")
-b3.metric("平均報酬", f"{merged_bt.avg_return * 100:+.2f}%"
-         if merged_bt.avg_return is not None else "—")
+st.subheader(f"🎯 {branch_id} 分點整體勝率（訊號後第 {entry_lag} 個交易日進場，"
+            f"再持有 {horizon} 個交易日）")
+b1, b2 = st.columns(2)
+with b1:
+    st.markdown("**絕對報酬**")
+    st.metric("買超訊號數", f"{merged_bt.n_signals:,}（可計算 {merged_bt.n_computable:,}）")
+    st.metric("勝率", f"{merged_bt.win_rate * 100:.1f}%"
+             if merged_bt.win_rate is not None else "—")
+    st.metric("平均報酬", f"{merged_bt.avg_return * 100:+.2f}%"
+             if merged_bt.avg_return is not None else "—")
+with b2:
+    st.markdown(f"**相對 0050（大盤基準）**")
+    st.metric("可比較訊號數", f"{merged_bt.n_excess_computable:,}")
+    st.metric("贏大盤機率", f"{merged_bt.win_rate_excess * 100:.1f}%"
+             if merged_bt.win_rate_excess is not None else "—")
+    st.metric("平均超額報酬", f"{merged_bt.avg_excess_return * 100:+.2f}%"
+             if merged_bt.avg_excess_return is not None else "—")
 st.caption(f"⚠️ {BACKTEST_DISCLAIMER}")
 
 df = pd.DataFrame(out_rows)

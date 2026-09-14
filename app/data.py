@@ -290,6 +290,23 @@ def branch_daily_series(paths: list[Path], stock_id: str, branch_id: str):
     """, {"files": files, "stock_id": stock_id, "branch_id": branch_id}).fetchall()
 
 
+def stock_total_daily_series(paths: list[Path], stock_id: str):
+    """``[(date, net_shares), ...]`` ascending -- one stock's **all-branch**
+    daily net flow (market-wide chip sentiment for that stock), for the
+    多股比較 page."""
+    got = _con(paths)
+    if got is None:
+        return []
+    con, files = got
+    return con.execute("""
+        SELECT date, sum(net_shares) AS net_shares
+        FROM read_parquet($files)
+        WHERE stock_id = $stock_id
+        GROUP BY date
+        ORDER BY date
+    """, {"files": files, "stock_id": stock_id}).fetchall()
+
+
 def branch_history_multi(paths: list[Path], branch_id: str
                          ) -> dict[str, list[tuple[str, int]]]:
     """One query for *every* stock a branch traded across ``paths`` (not just

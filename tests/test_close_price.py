@@ -63,3 +63,37 @@ def test_cache_is_keyed_per_stock(tmp_path):
                               downloader=lambda t, s, e: {"2026-09-08": 1000.0})
     other = cp.cached_closes("2317", ["2026-09-08"], db_path=db)
     assert other == {}
+
+
+# --------------------------------------------------------------------------- #
+# volume -- independent cache, same pattern
+# --------------------------------------------------------------------------- #
+def test_get_volumes_cache_miss_then_hit(tmp_path):
+    db = str(tmp_path / "close.db")
+    calls = []
+
+    def fake(ticker, start, end):
+        calls.append((ticker, start, end))
+        return {"2026-09-08": 12_345_000, "2026-09-09": 9_876_000}
+
+    got = cp.get_volumes("2330", "twse", ["2026-09-08", "2026-09-09"],
+                         db_path=db, downloader=fake)
+    assert got == {"2026-09-08": 12_345_000, "2026-09-09": 9_876_000}
+    assert calls == [("2330.TW", "2026-09-08", "2026-09-09")]
+
+    calls.clear()
+    got2 = cp.get_volumes("2330", "twse", ["2026-09-08", "2026-09-09"],
+                          db_path=db, downloader=fake)
+    assert got2 == got and calls == []
+
+
+def test_volume_and_close_caches_are_independent(tmp_path):
+    db = str(tmp_path / "close.db")
+    cp.fetch_and_cache_closes("2330", "twse", "2026-09-08", "2026-09-08",
+                              db_path=db, downloader=lambda t, s, e: {"2026-09-08": 1000.0})
+    # volume cache untouched by the close fetch
+    assert cp.cached_volumes("2330", ["2026-09-08"], db_path=db) == {}
+
+
+def test_get_volumes_empty_dates():
+    assert cp.get_volumes("2330", "twse", []) == {}

@@ -8,6 +8,10 @@ CACHE_DIR = ".cache/parquet"
 REFERENCE_DB = "reference.db"
 CLOSE_DB = ".cache/close_cache.db"
 
+# 大盤基準代理：0050（元大台灣50），上市＋上櫃回測都用它當超額報酬的比較基準。
+BENCHMARK_STOCK_ID = "0050"
+BENCHMARK_MARKET = "twse"
+
 
 def get_token() -> str:
     try:

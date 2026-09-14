@@ -88,17 +88,29 @@ if result.trace:
         "超賣": "是" if t.oversold else "",
     } for t in result.trace])
 
-    st.subheader("股價 × 分點庫存 疊圖")
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    st.subheader("股價 × 成交量 × 分點庫存 疊圖")
+    volumes = close_price.get_volumes(stock_id, market, tdf["日期"].tolist(),
+                                      db_path=config.CLOSE_DB)
+    tdf["成交量"] = tdf["日期"].map(volumes)
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28],
+                        vertical_spacing=0.04,
+                        specs=[[{"secondary_y": True}], [{}]])
     fig.add_trace(go.Scatter(x=tdf["日期"], y=tdf["收盤價"], name="收盤價",
-                             line=dict(color="#1f77b4")), secondary_y=False)
+                             line=dict(color="#1f77b4")), row=1, col=1, secondary_y=False)
     fig.add_trace(go.Bar(x=tdf["日期"], y=tdf["當日累計庫存(張)"], name="累計庫存(張)",
-                         marker=dict(color="#ff7f0e"), opacity=0.35), secondary_y=True)
-    fig.update_yaxes(title_text="收盤價", secondary_y=False)
-    fig.update_yaxes(title_text="累計庫存（張）", secondary_y=True)
-    fig.update_layout(height=420, margin=dict(t=20, b=20),
+                         marker=dict(color="#ff7f0e"), opacity=0.35),
+                 row=1, col=1, secondary_y=True)
+    fig.add_trace(go.Bar(x=tdf["日期"], y=tdf["成交量"], name="成交量",
+                         marker=dict(color="#888888")), row=2, col=1)
+    fig.update_yaxes(title_text="收盤價", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="累計庫存（張）", row=1, col=1, secondary_y=True)
+    fig.update_yaxes(title_text="成交量", row=2, col=1)
+    fig.update_layout(height=560, margin=dict(t=20, b=20),
                       legend=dict(orientation="h", yanchor="bottom", y=1.02))
     st.plotly_chart(fig, use_container_width=True)
+    if tdf["成交量"].isna().all():
+        st.caption("成交量來源查無資料（Yahoo Finance）。")
 
     st.dataframe(tdf, hide_index=True, use_container_width=True)
     ui_common.download_csv_button(

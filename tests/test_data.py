@@ -274,6 +274,16 @@ def test_branch_history_multi_no_files_returns_empty():
     assert data.branch_history_multi([], "9200") == {}
 
 
+def test_stock_total_daily_series_sums_all_branches(two_day_fixture):
+    rows = data.stock_total_daily_series(two_day_fixture, "2330")
+    # 2026-09-08: 9200(4000) + 1440(-2000) = 2000 ; 2026-09-09: 9200(2500) + 1440(-1000) = 1500
+    assert rows == [("2026-09-08", 2000), ("2026-09-09", 1500)]
+
+
+def test_stock_total_daily_series_no_files_returns_empty():
+    assert data.stock_total_daily_series([], "2330") == []
+
+
 def test_branch_overview_candidates(two_day_fixture):
     rows = data.branch_overview_candidates(two_day_fixture, "9200")
     stocks = {r[0]: r for r in rows}
