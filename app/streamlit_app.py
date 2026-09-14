@@ -5,6 +5,14 @@
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Streamlit Cloud execs this file without the repo root on sys.path (unlike a
+# local `python -m streamlit run app/streamlit_app.py` from the repo root, where
+# `-m` adds the CWD) -- add it explicitly so `from app import ...` resolves.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import streamlit as st
 
 from app import config, data
