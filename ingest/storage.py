@@ -213,7 +213,7 @@ def write_latest(records: list[dict], path: str) -> int:
     return len(records)
 
 
-def prune_old_releases(*, repo: str, keep_months: int = 13,
+def prune_old_releases(*, repo: str, keep_months: int = 24,
                        today: str | None = None) -> list[str]:
     """Delete releases outside the retention window; return deleted tags in order.
 
@@ -238,7 +238,7 @@ def prune_old_releases(*, repo: str, keep_months: int = 13,
 
 
 def merge_manifest(manifest: dict, date_iso: str, entry: dict,
-                   keep_months: int = 13) -> dict:
+                   keep_months: int = 24) -> dict:
     """Return a new manifest with ``date_iso`` set to ``entry``, old days dropped.
 
     Pure — does not mutate ``manifest``. Days older than ``keep_months`` months

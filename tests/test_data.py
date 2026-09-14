@@ -118,6 +118,62 @@ def test_download_day_missing_date_returns_none(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# download_latest_board / latest_board_for_stock -- today's top-15/15 sweep
+# --------------------------------------------------------------------------- #
+def test_download_latest_board_hits_meta_release(tmp_path):
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(str(req.url))
+        if "releases/tags/meta" in str(req.url):
+            return httpx.Response(200, json={
+                "assets": [{"name": "latest.parquet", "id": 555}]})
+        if "releases/assets/555" in str(req.url):
+            return httpx.Response(200, content=b"LATESTBYTES")
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    p = data.download_latest_board(token="tok", cache_dir=str(tmp_path), client=client)
+    assert p is not None and p.name == "latest.parquet"
+    assert p.read_bytes() == b"LATESTBYTES"
+    assert any("releases/tags/meta" in c for c in calls)
+
+
+def test_download_latest_board_missing_release_returns_none(tmp_path):
+    client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(404)))
+    p = data.download_latest_board(token="tok", cache_dir=str(tmp_path), client=client)
+    assert p is None
+
+
+def test_latest_board_for_stock(tmp_path):
+    from ingest.storage import write_latest
+    write_latest([
+        {"data_date": "2026-09-14", "market": "twse", "stock_id": "3008",
+         "branch_id": "", "branch_name": "某大分點", "side": "buy",
+         "buy_lots": 100, "sell_lots": 0, "net_lots": 100,
+         "avg_buy_cost": 2000.0, "avg_sell_cost": None},
+        {"data_date": "2026-09-14", "market": "twse", "stock_id": "3008",
+         "branch_id": "", "branch_name": "另一分點", "side": "sell",
+         "buy_lots": 0, "sell_lots": 50, "net_lots": -50,
+         "avg_buy_cost": None, "avg_sell_cost": 1990.0},
+        {"data_date": "2026-09-14", "market": "twse", "stock_id": "9999",
+         "branch_id": "", "branch_name": "別檔股票", "side": "buy",
+         "buy_lots": 10, "sell_lots": 0, "net_lots": 10,
+         "avg_buy_cost": 10.0, "avg_sell_cost": None},
+    ], str(tmp_path / "latest.parquet"))
+
+    rows = data.latest_board_for_stock(tmp_path / "latest.parquet", "3008")
+    assert len(rows) == 2
+    assert rows[0][0] == "某大分點" and rows[0][4] == 100     # net desc
+    assert rows[1][0] == "另一分點" and rows[1][4] == -50
+
+
+def test_latest_board_for_stock_missing_file_returns_empty(tmp_path):
+    assert data.latest_board_for_stock(tmp_path / "nope.parquet", "3008") == []
+    assert data.latest_board_for_stock(None, "3008") == []
+
+
+# --------------------------------------------------------------------------- #
 # DuckDB query helpers -- real Parquet fixtures, no mocking
 # --------------------------------------------------------------------------- #
 @pytest.fixture

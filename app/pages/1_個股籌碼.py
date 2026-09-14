@@ -17,6 +17,21 @@ stock_id = ui_common.pick_stock()
 if not stock_id:
     st.stop()
 
+# 今日即時榜：每日全市場前15大買超/賣超掃描，當天就有，不受下方「近N日」查詢
+# 20天滾動更新週期影響（見「資料更新方式」說明）。只顯示當天最大的 30 個分點；
+# 較小的量要等滾動排程才會進歷史資料庫（見下方近N日區塊）。
+latest_rows = ui_common.latest_board_for_stock(stock_id)
+if latest_rows:
+    latest_date = latest_rows[0][5]
+    st.subheader(f"🔴 今日即時榜（{latest_date}，前15大買超/賣超，當天更新）")
+    ldf = pd.DataFrame(latest_rows,
+                       columns=["分點名稱", "方向", "買進張", "賣出張", "買賣超張", "資料日"])
+    ldf["方向"] = ldf["方向"].map({"buy": "買超", "sell": "賣超"})
+    st.dataframe(ldf.drop(columns=["資料日"]), hide_index=True, use_container_width=True)
+    st.caption("即時榜只有前 15 大買超 + 前 15 大賣超；較小量的分點要等下方「近 N 日」"
+              "資料庫滾動更新才會出現（最多 20 天）。")
+    st.divider()
+
 n = st.select_slider("回看交易日數", options=[5, 10, 20, 60], value=20)
 
 manifest = ui_common.manifest()
@@ -39,15 +54,16 @@ df["買賣超張"] //= 1000
 total_abs = df["買賣超張"].abs().sum()
 df["佔區間總量比重"] = (df["買賣超張"].abs() / total_abs * 100).round(2).astype(str) + "%"
 
-st.caption(f"統計區間：{dates[0]} ～ {dates[-1]}（{len(dates)} 個交易日）")
+st.caption(f"統計區間：{dates[0]} ～ {dates[-1]}（{len(dates)} 個交易日，資料庫完整明細，"
+          f"非僅前15大）")
 
 c1, c2 = st.columns(2)
 with c1:
-    st.subheader("前 15 大買超分點")
+    st.subheader("前 15 大買超分點（近N日排行）")
     st.dataframe(df.sort_values("買賣超張", ascending=False).head(15)
                 .reset_index(drop=True), hide_index=True, use_container_width=True)
 with c2:
-    st.subheader("前 15 大賣超分點")
+    st.subheader("前 15 大賣超分點（近N日排行）")
     st.dataframe(df.sort_values("買賣超張").head(15)
                 .reset_index(drop=True), hide_index=True, use_container_width=True)
 

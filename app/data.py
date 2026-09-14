@@ -81,6 +81,38 @@ def _asset_id_from_url(url: str) -> str | None:
     return f"{owner}/{repo}", tag, fname
 
 
+def _download_by_tag(owner_repo: str, tag: str, asset_fname: str, dest: Path,
+                     *, token: str, client: httpx.Client | None = None) -> Path | None:
+    """Download one named asset off release ``tag`` in ``owner_repo`` (works for
+    private repos via ``token``). Returns ``dest``, or ``None`` if the release or
+    asset doesn't exist."""
+    own = client is None
+    client = client or httpx.Client(timeout=60, headers={"User-Agent": _UA},
+                                    follow_redirects=True)
+    try:
+        api = f"https://api.github.com/repos/{owner_repo}/releases/tags/{tag}"
+        r = client.get(api, headers={"Authorization": f"Bearer {token}",
+                                     "Accept": "application/vnd.github+json"})
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        asset = next((a for a in r.json().get("assets", [])
+                     if a["name"] == asset_fname), None)
+        if asset is None:
+            return None
+        dl = client.get(
+            f"https://api.github.com/repos/{owner_repo}/releases/assets/{asset['id']}",
+            headers={"Authorization": f"Bearer {token}",
+                    "Accept": "application/octet-stream"})
+        dl.raise_for_status()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(dl.content)
+        return dest
+    finally:
+        if own:
+            client.close()
+
+
 def download_day(date_iso: str, manifest: dict, *, token: str,
                  cache_dir: str, client: httpx.Client | None = None) -> Path | None:
     """Download (or reuse the cached copy of) one day's Parquet partition.
@@ -96,29 +128,39 @@ def download_day(date_iso: str, manifest: dict, *, token: str,
     if resolved is None:
         return None
     owner_repo, tag, asset_fname = resolved
-    own = client is None
-    client = client or httpx.Client(timeout=60, headers={"User-Agent": _UA},
-                                    follow_redirects=True)
-    try:
-        api = (f"https://api.github.com/repos/{owner_repo}/releases/tags/{tag}")
-        r = client.get(api, headers={"Authorization": f"Bearer {token}",
-                                     "Accept": "application/vnd.github+json"})
-        r.raise_for_status()
-        asset = next((a for a in r.json().get("assets", [])
-                     if a["name"] == asset_fname), None)
-        if asset is None:
-            return None
-        dl = client.get(
-            f"https://api.github.com/repos/{owner_repo}/releases/assets/{asset['id']}",
-            headers={"Authorization": f"Bearer {token}",
-                    "Accept": "application/octet-stream"})
-        dl.raise_for_status()
-        Path(cache_dir).mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(dl.content)
-        return dest
-    finally:
-        if own:
-            client.close()
+    return _download_by_tag(owner_repo, tag, asset_fname, dest, token=token, client=client)
+
+
+DATA_REPO = "jjerry0519/broker-branch-tracker-data"
+
+
+def download_latest_board(*, token: str, cache_dir: str, repo: str = DATA_REPO,
+                          client: httpx.Client | None = None) -> Path | None:
+    """The daily ``zco`` top-15/top-15 sweep (``meta`` release, ``latest.parquet``)
+    -- every stock's biggest movers, same trading day, independent of the 20-day
+    rolling shard that the historical per-day store depends on. Always
+    re-downloaded (the file is overwritten daily); callers should wrap with a
+    short-TTL cache (``st.cache_data``), not treat it as permanently cacheable
+    like a day-partition."""
+    dest = Path(cache_dir) / "latest.parquet"
+    return _download_by_tag(repo, "meta", "latest.parquet", dest, token=token,
+                            client=client)
+
+
+def latest_board_for_stock(path: Path | None, stock_id: str):
+    """``[(branch_name, side, buy_lots, sell_lots, net_lots, data_date), ...]``
+    for one stock from the daily top-15/top-15 sweep -- same trading day, but
+    only the biggest movers (see :func:`stock_branch_rankings` for the complete,
+    every-branch view, which can lag up to the rolling cycle length)."""
+    if path is None or not path.exists():
+        return []
+    con = duckdb.connect()
+    return con.execute("""
+        SELECT branch_name, side, buy_lots, sell_lots, net_lots, data_date
+        FROM read_parquet($file)
+        WHERE stock_id = $stock_id
+        ORDER BY net_lots DESC
+    """, {"file": str(path), "stock_id": stock_id}).fetchall()
 
 
 def ensure_days_cached(dates: list[str], manifest: dict, *, token: str,
