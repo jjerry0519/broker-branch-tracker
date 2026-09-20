@@ -126,7 +126,7 @@ def page_header(icon: str, title: str, subtitle: str = "") -> None:
     )
 
 
-@st.cache_data(ttl=6 * 3600)
+@st.cache_data(ttl=1800)
 def manifest() -> dict:
     return data.fetch_manifest(config.CODE_REPO)
 

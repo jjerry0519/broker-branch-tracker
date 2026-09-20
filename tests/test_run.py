@@ -199,17 +199,104 @@ def test_main_skips_when_trading_date_unresolvable(tmp_path, monkeypatch):
     assert not (tmp_path / "manifest.json").exists()
 
 
-def test_main_skips_when_already_ingested(tmp_path, monkeypatch):
+def _board_page(date: str) -> ZcoPage:
+    return ZcoPage("X", date, branches=[ZcoBranchRow("富邦-台北", 10, 2, 8),
+                                        ZcoBranchRow("美林", 1, 9, -8)])
+
+
+def test_main_skips_when_already_ingested_and_board_unchanged(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "manifest.json").write_text(json.dumps(
-        {"days": {"2026-09-09": {"sweep_done": True}}}), encoding="utf-8")
+        {"days": {"2026-09-09": {"sweep_done": True}},
+         "board_date": "2026-09-09"}), encoding="utf-8")
     monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-09")
+    monkeypatch.setattr(run, "new_client", lambda *a, **k: _NoClient())
+    monkeypatch.setattr(run, "fetch_zco", lambda c, sid, **k: _board_page("2026-09-09"))
     monkeypatch.setattr(run, "_universe", lambda skip: (_ for _ in ()).throw(
         AssertionError("must not run past the skip")))
 
     assert main([]) == 0
+    assert _read_log(tmp_path) == []          # a no-op run must not dirty the log
+
+
+def test_main_skips_when_probe_fails_but_day_done(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "manifest.json").write_text(json.dumps(
+        {"days": {"2026-09-09": {"sweep_done": True}}}), encoding="utf-8")
+    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-09")
+    monkeypatch.setattr(run, "new_client", lambda *a, **k: _NoClient())
+
+    def boom(c, sid, **k):
+        raise RuntimeError("mirror down")
+    monkeypatch.setattr(run, "fetch_zco", boom)
+    monkeypatch.setattr(run, "_universe", lambda skip: (_ for _ in ()).throw(
+        AssertionError("probe failure must fall back to the day guard")))
+
+    assert main([]) == 0
+
+
+def test_main_board_only_run_when_day_done_but_board_is_newer(tmp_path, monkeypatch):
+    """TWSE still says 09-09 (done) but the board already shows 09-10: refresh the
+    board, record board_date, and do NOT burn another rolling-shard slot."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "manifest.json").write_text(json.dumps(
+        {"days": {"2026-09-09": {"sweep_done": True}},
+         "board_date": "2026-09-09"}), encoding="utf-8")
+    (tmp_path / "refresh_state.json").write_text(json.dumps(
+        {"refreshed_through": {"2330": "2026-09-09"}}), encoding="utf-8")
+    monkeypatch.setattr(run, "resolved_trading_date", lambda c: "2026-09-09")
+    monkeypatch.setattr(run, "new_client", lambda *a, **k: _NoClient())
+    monkeypatch.setattr(run, "fetch_zco", lambda c, sid, **k: _board_page("2026-09-10"))
+    monkeypatch.setattr(run, "_universe", lambda skip: [
+        Stock("2330", "台積電", "twse", 1000.0), Stock("6488", "環球晶", "tpex", 900.0)])
+    monkeypatch.setattr(run, "load_branches",
+                        lambda *a, **k: [("9200", "富邦-台北"), ("1440", "美林")])
+    monkeypatch.setattr(run, "fetch_zco0", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("board-only run must not touch the rolling shard")))
+
+    assert main(["--repo", "", "--workers", "2"]) == 0
+
+    assert (tmp_path / "out" / "latest.parquet").exists()
+    manifest = json.loads((tmp_path / "manifest.json").read_text("utf-8"))
+    assert manifest["board_date"] == "2026-09-10"
+    assert list(manifest["days"]) == ["2026-09-09"]        # no new day registered
+    state = json.loads((tmp_path / "refresh_state.json").read_text("utf-8"))
+    assert state["refreshed_through"] == {"2330": "2026-09-09"}   # untouched
     log = _read_log(tmp_path)
-    assert log[-1]["status"] == "skipped" and log[-1]["note"] == "already ingested"
+    assert [r["leg"] for r in log] == ["sweep"] and log[0]["board_date"] == "2026-09-10"
+
+
+def test_probe_board_date_majority_and_insufficient(monkeypatch):
+    dates = iter(["2026-09-10", "2026-09-10", "2026-09-09", "2026-09-10", "2026-09-10"])
+    monkeypatch.setattr(run, "fetch_zco", lambda c, sid, **k: _board_page(next(dates)))
+    assert run._probe_board_date(None) == "2026-09-10"
+
+    answered = iter(["2026-09-10", "2026-09-10"])
+
+    def flaky(c, sid, **k):
+        try:
+            return _board_page(next(answered))
+        except StopIteration:
+            raise RuntimeError("down")
+    monkeypatch.setattr(run, "fetch_zco", flaky)
+    assert run._probe_board_date(None) is None            # < 3 answers
+
+
+def test_probe_board_date_no_strict_majority(monkeypatch):
+    dates = iter(["2026-09-10", "2026-09-09", "2026-09-10", "2026-09-09"])
+    monkeypatch.setattr(run, "fetch_zco", lambda c, sid, **k: _board_page(next(dates))
+                        if sid != "3008" else (_ for _ in ()).throw(RuntimeError()))
+    assert run._probe_board_date(None) is None            # 2 vs 2, not > half
+
+
+def test_board_date_from_recs_requires_share():
+    full = [{"stock_id": str(i), "data_date": "2026-09-10"} for i in range(19)]
+    assert run._board_date_from_recs(full + [{"stock_id": "x", "data_date": "2026-09-09"}]) \
+        == "2026-09-10"                                    # 19/20 = 95%
+    assert run._board_date_from_recs(full[:18] + [
+        {"stock_id": "x", "data_date": "2026-09-09"},
+        {"stock_id": "y", "data_date": "2026-09-09"}]) is None   # 18/20 = 90%
+    assert run._board_date_from_recs([]) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -252,6 +339,7 @@ def test_main_daily_happy_path(tmp_path, monkeypatch):
 
     manifest = json.loads((tmp_path / "manifest.json").read_text("utf-8"))
     assert manifest["days"]["2026-09-09"]["sweep_done"] is True
+    assert manifest["board_date"] == "2026-09-09"
 
     log = _read_log(tmp_path)
     assert any(r.get("leg") == "sweep" and r["status"] == "ok" for r in log)

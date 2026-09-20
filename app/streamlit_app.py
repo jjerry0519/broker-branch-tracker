@@ -21,7 +21,7 @@ st.set_page_config(page_title="台股分點籌碼追蹤", page_icon="📊", layo
 ui_common.inject_style()
 
 
-@st.cache_data(ttl=6 * 3600)
+@st.cache_data(ttl=1800)
 def _manifest() -> dict:
     return data.fetch_manifest(config.CODE_REPO)
 
@@ -57,10 +57,13 @@ try:
     manifest = _manifest()
     days = sorted(manifest.get("days", {}))
     if days:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("資料起始", days[0])
-        m2.metric("資料結束", days[-1])
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("歷史庫起始", days[0])
+        m2.metric("歷史庫結束", days[-1])
         m3.metric("累積交易日數", f"{len(days):,}")
+        m4.metric("今日即時榜資料日", manifest.get("board_date") or "—")
+        st.caption("今日即時榜＝每檔股票當天前 15 大買超／賣超，晚上資料一出來就更新（開盤前看這個）；"
+                   "歷史庫＝逐日完整分點明細，依滾動排程補齊，日期通常比即時榜晚 1 天。")
     else:
         st.warning("資料庫目前是空的（管線尚未產出任何一天的資料）。")
 except Exception as e:  # noqa: BLE001

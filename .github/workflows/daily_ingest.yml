@@ -51,11 +51,15 @@ jobs:
       - run: pip install -r requirements.txt
 
       - name: Weekly reference refresh (Mondays)
+        env:
+          EVENT: ${{ github.event_name }}
         run: |
-          if [ "$(date -u +%u)" = "1" ]; then
+          # Only the built-in schedule run refreshes: external triggers fire several
+          # times a day and would otherwise rewrite reference.db on each one.
+          if [ "$(date -u +%u)" = "1" ] && [ "$EVENT" = "schedule" ]; then
             python -c "from ingest.reference import refresh_reference_db; print(refresh_reference_db())"
           else
-            echo "not Monday (UTC) -- skip reference refresh"
+            echo "not a Monday schedule run -- skip reference refresh"
           fi
 
       - name: Ingest

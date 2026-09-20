@@ -12,8 +12,14 @@ Plain HTTP, no browser, no CAPTCHA. One run does:
    ``reference.db`` over ``[refreshed_through+1 .. target]``. Rows (張 x 1000 ->
    shares) are merged into each affected ``<date>.parquet`` day-partition and
    re-uploaded. ``mark_done`` advances those stocks to ``target``.
-4. **Retention / manifest** -- prune releases outside 13 months; persist the
-   manifest and ``refresh_state.json``.
+4. **Retention / manifest** -- prune releases outside the retention window;
+   persist the manifest and ``refresh_state.json``.
+
+The zco board (step 2) is gated separately from the TWSE-date guard: SysJust has
+day T's board on the evening of T while TWSE only reaches T the next morning, so
+a cheap probe of a few large caps decides whether a fresher board exists
+(``manifest["board_date"]``). Evening triggers can therefore refresh the board
+without re-running that day's rolling shard.
 
 ``--mode backfill`` runs step 3 only with a 15-month window and ``--shard i/N``
 to split the one-time ~1.7M-cell first fill across dispatched runs.
@@ -25,7 +31,7 @@ import datetime as dt
 import json
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -356,6 +362,38 @@ def _zco_sweep(client: httpx.Client, stocks: list[Stock],
 # --------------------------------------------------------------------------- #
 # entry point
 # --------------------------------------------------------------------------- #
+_PROBE_STOCKS = ("2330", "2317", "2454", "2603", "3008")
+
+
+def _probe_board_date(client: httpx.Client) -> str | None:
+    """Data date the ``zco`` board is showing right now, read from a few large
+    caps (a strict majority must agree). ``None`` when too few pages answered --
+    the caller then falls back to the TWSE-keyed guard alone."""
+    dates: list[str] = []
+    for sid in _PROBE_STOCKS:
+        try:
+            d = fetch_zco(client, sid).data_date
+        except Exception:
+            continue
+        if d:
+            dates.append(d)
+    if len(dates) < 3:
+        return None
+    date, n = Counter(dates).most_common(1)[0]
+    return date if n * 2 > len(dates) else None
+
+
+def _board_date_from_recs(recs: list[dict], *, share: float = 0.95) -> str | None:
+    """The data date carried by at least ``share`` of the swept stocks, else
+    ``None`` (a half-published board is not recorded, so the next probe sweeps
+    again instead of treating it as done)."""
+    per_stock = {r["stock_id"]: r["data_date"] for r in recs if r.get("data_date")}
+    if not per_stock:
+        return None
+    date, n = Counter(per_stock.values()).most_common(1)[0]
+    return date if n / len(per_stock) >= share else None
+
+
 def _universe(skip_tpex: bool) -> list[Stock]:
     with httpx.Client() as uc:
         stocks = twse_traded(uc)
@@ -421,25 +459,32 @@ def main(argv: list[str] | None = None) -> int:
         target = args.date
 
     manifest = load_manifest()
-    if (args.mode == "daily" and not args.force
-            and target in manifest.get("days", {})
-            and manifest["days"][target].get("sweep_done")):
-        _append_log({"date": target, "mode": "daily", "status": "skipped",
-                     "note": "already ingested", "started_at": started,
-                     "finished_at": _now()})
-        print(f"{target} already ingested; skip (use --force)")
-        return 0
-
-    stocks = _universe(args.skip_tpex)
-    if args.stock_limit > 0:
-        stocks = stocks[:args.stock_limit]
-    branches = _branch_axis()
-    name_map = dict(branches)
-
     client = new_client()
     try:
+        daily = args.mode == "daily"
+        # The zco board carries day T on the evening of T, but TWSE's feed only
+        # reaches T the next morning. So "is there a fresher board?" is decided by
+        # the board itself (probe), independently of the TWSE-keyed day guard.
+        board_probe = _probe_board_date(client) if daily and not args.skip_sweep else None
+        target_done = (daily and not args.force
+                       and target in manifest.get("days", {})
+                       and bool(manifest["days"][target].get("sweep_done")))
+        board_new = bool(board_probe) and board_probe != manifest.get("board_date")
+        if target_done and not board_new:
+            # Nothing new anywhere. Deliberately not logged: hourly evening
+            # triggers would otherwise commit a log line every time.
+            print(f"{target} already ingested and board still {board_probe}; skip "
+                  "(use --force)")
+            return 0
+
+        stocks = _universe(args.skip_tpex)
+        if args.stock_limit > 0:
+            stocks = stocks[:args.stock_limit]
+        branches = _branch_axis()
+        name_map = dict(branches)
+
         # ---- zco sweep -------------------------------------------------------
-        if args.mode == "daily" and not args.skip_sweep:
+        if daily and not args.skip_sweep:
             recs, sweep_failed = _zco_sweep(client, stocks, name_map,
                                             workers=args.workers)
             _WORK.mkdir(exist_ok=True)
@@ -447,15 +492,21 @@ def main(argv: list[str] | None = None) -> int:
             n_latest = write_latest(recs, latest_path)
             if args.repo:
                 upload_assets("meta", [latest_path], repo=args.repo)
+            swept = _board_date_from_recs(recs)
+            if swept:
+                manifest["board_date"] = swept
             _append_log({"date": target, "mode": "daily", "leg": "sweep",
                          "status": "ok" if not sweep_failed else "partial",
                          "stock_count": len(stocks), "row_count": n_latest,
+                         "board_date": swept,
                          "failed": sweep_failed, "started_at": started,
                          "finished_at": _now()})
 
         # ---- rolling / backfill zco0 shard --------------------------------- #
         state = load_state()
         total = {"dates": 0, "rows": 0}
+        run_shard = not target_done          # sweep-only run when today's shard is done
+        legname, shard, shard_failed = "", [], []
 
         if args.mode == "backfill":
             lookback = args.months * 31
@@ -481,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
                 client, shard, branches, state, target=target,
                 max_lookback=lookback, workers=args.workers,
                 flush=_flush, flush_every=max(1, args.flush_every))
-        else:
+        elif run_shard:
             lookback = args.max_lookback
             shard = [s for s in stocks
                      if s.stock_id in set(next_shard(
@@ -496,20 +547,21 @@ def main(argv: list[str] | None = None) -> int:
             state = mark_done(state, [s.stock_id for s in shard], target)
             save_state(state)
 
-        _append_log({"date": target, "mode": args.mode, "leg": legname,
-                     "status": "ok" if not shard_failed else "partial",
-                     "shard_stocks": len(shard), "dates_written": total["dates"],
-                     "row_count": total["rows"], "failed": shard_failed,
-                     "started_at": started, "finished_at": _now()})
+        if legname:
+            _append_log({"date": target, "mode": args.mode, "leg": legname,
+                         "status": "ok" if not shard_failed else "partial",
+                         "shard_stocks": len(shard), "dates_written": total["dates"],
+                         "row_count": total["rows"], "failed": shard_failed,
+                         "started_at": started, "finished_at": _now()})
     finally:
         client.close()
 
-    if args.mode == "daily":
+    if daily and run_shard:
         entry = manifest.get("days", {}).get(target, {})
         entry["sweep_done"] = not args.skip_sweep
         manifest.update(merge_manifest(manifest, target, entry))
         # Retention only on the daily path -- backfill deliberately reaches past
-        # the 13-month window and must not prune what it is filling.
+        # the retention window and must not prune what it is filling.
         if args.repo:
             prune_old_releases(repo=args.repo)
     save_manifest(manifest)
