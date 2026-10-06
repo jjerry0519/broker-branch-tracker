@@ -1895,109 +1895,116 @@
     "2026-09-11": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-11.parquet",
       "rows": {
-        "flows": 283131
+        "flows": 301784
       },
       "sweep_done": true
     },
     "2026-09-14": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-14.parquet",
       "rows": {
-        "flows": 248516
+        "flows": 264120
       },
       "sweep_done": true
     },
     "2026-09-15": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-15.parquet",
       "rows": {
-        "flows": 235531
+        "flows": 250466
       },
       "sweep_done": true
     },
     "2026-09-16": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-16.parquet",
       "rows": {
-        "flows": 219268
+        "flows": 234615
       },
       "sweep_done": true
     },
     "2026-09-17": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-17.parquet",
       "rows": {
-        "flows": 230970
+        "flows": 248101
       },
       "sweep_done": true
     },
     "2026-09-18": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-18.parquet",
       "rows": {
-        "flows": 203914
+        "flows": 223799
       },
       "sweep_done": true
     },
     "2026-09-21": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-21.parquet",
       "rows": {
-        "flows": 178302
+        "flows": 198664
       },
       "sweep_done": true
     },
     "2026-09-22": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-22.parquet",
       "rows": {
-        "flows": 164550
+        "flows": 185826
       },
       "sweep_done": true
     },
     "2026-09-23": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-23.parquet",
       "rows": {
-        "flows": 123642
+        "flows": 142450
       },
       "sweep_done": true
     },
     "2026-09-24": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-24.parquet",
       "rows": {
-        "flows": 96503
+        "flows": 113881
       },
       "sweep_done": true
     },
     "2026-09-29": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-29.parquet",
       "rows": {
-        "flows": 77662
+        "flows": 96288
       },
       "sweep_done": true
     },
     "2026-09-30": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-09/2026-09-30.parquet",
       "rows": {
-        "flows": 81478
+        "flows": 102729
       },
       "sweep_done": true
     },
     "2026-10-01": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-01.parquet",
       "rows": {
-        "flows": 58928
+        "flows": 80261
       },
       "sweep_done": true
     },
     "2026-10-02": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-02.parquet",
       "rows": {
-        "flows": 44427
+        "flows": 68132
       },
       "sweep_done": true
     },
     "2026-10-05": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-05.parquet",
       "rows": {
-        "flows": 29034
+        "flows": 53629
+      },
+      "sweep_done": true
+    },
+    "2026-10-06": {
+      "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-06.parquet",
+      "rows": {
+        "flows": 22011
       },
       "sweep_done": true
     }
   },
-  "updated": "2026-10-05T23:43:22.402176+00:00",
+  "updated": "2026-10-06T22:40:55.804947+00:00",
   "board_date": "2026-10-06"
 }
