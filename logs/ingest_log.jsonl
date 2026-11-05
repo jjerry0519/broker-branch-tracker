@@ -108,3 +108,4 @@
 {"date": "2026-11-04", "mode": "daily", "leg": "sweep", "status": "ok", "stock_count": 1981, "row_count": 55241, "board_date": "2026-11-04", "failed": [], "started_at": "2026-11-04T22:01:15.224366+00:00", "finished_at": "2026-11-04T22:02:30.780796+00:00"}
 {"date": "2026-11-04", "mode": "daily", "leg": "shard", "status": "ok", "shard_stocks": 100, "dates_written": 21, "row_count": 4524885, "failed": [], "started_at": "2026-11-04T22:01:15.224366+00:00", "finished_at": "2026-11-04T22:47:40.410465+00:00"}
 {"date": "?", "mode": "daily", "status": "skipped", "note": "could not resolve latest trading date", "started_at": "2026-11-05T11:01:18.871822+00:00", "finished_at": "2026-11-05T11:01:35.816497+00:00"}
+{"date": "2026-11-04", "mode": "daily", "leg": "sweep", "status": "ok", "stock_count": 1982, "row_count": 54881, "board_date": "2026-11-05", "failed": [], "started_at": "2026-11-05T18:08:59.082566+00:00", "finished_at": "2026-11-05T18:10:06.189262+00:00"}
