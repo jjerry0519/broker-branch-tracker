@@ -2056,151 +2056,158 @@
     "2026-10-19": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-19.parquet",
       "rows": {
-        "flows": 359731
+        "flows": 359745
       },
       "sweep_done": true
     },
     "2026-10-20": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-20.parquet",
       "rows": {
-        "flows": 347700
+        "flows": 349648
       },
       "sweep_done": true
     },
     "2026-10-21": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-21.parquet",
       "rows": {
-        "flows": 305827
+        "flows": 338923
       },
       "sweep_done": true
     },
     "2026-10-22": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-22.parquet",
       "rows": {
-        "flows": 310977
+        "flows": 344693
       },
       "sweep_done": true
     },
     "2026-10-27": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-27.parquet",
       "rows": {
-        "flows": 255502
+        "flows": 286752
       },
       "sweep_done": true
     },
     "2026-10-28": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-28.parquet",
       "rows": {
-        "flows": 229174
+        "flows": 259950
       },
       "sweep_done": true
     },
     "2026-10-29": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-29.parquet",
       "rows": {
-        "flows": 216831
+        "flows": 248735
       },
       "sweep_done": true
     },
     "2026-10-30": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-10/2026-10-30.parquet",
       "rows": {
-        "flows": 227284
+        "flows": 262393
       },
       "sweep_done": true
     },
     "2026-11-02": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-02.parquet",
       "rows": {
-        "flows": 173391
+        "flows": 202383
       },
       "sweep_done": true
     },
     "2026-11-03": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-03.parquet",
       "rows": {
-        "flows": 204903
+        "flows": 239402
       },
       "sweep_done": true
     },
     "2026-11-04": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-04.parquet",
       "rows": {
-        "flows": 177015
+        "flows": 210716
       },
       "sweep_done": true
     },
     "2026-11-05": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-05.parquet",
       "rows": {
-        "flows": 159402
+        "flows": 192358
       },
       "sweep_done": true
     },
     "2026-11-06": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-06.parquet",
       "rows": {
-        "flows": 154308
+        "flows": 190774
       },
       "sweep_done": true
     },
     "2026-11-09": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-09.parquet",
       "rows": {
-        "flows": 102690
+        "flows": 134355
       },
       "sweep_done": true
     },
     "2026-11-10": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-10.parquet",
       "rows": {
-        "flows": 98710
+        "flows": 133910
       },
       "sweep_done": true
     },
     "2026-11-11": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-11.parquet",
       "rows": {
-        "flows": 80331
+        "flows": 112952
       },
       "sweep_done": true
     },
     "2026-11-12": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-12.parquet",
       "rows": {
-        "flows": 75759
+        "flows": 109815
       },
       "sweep_done": true
     },
     "2026-11-13": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-13.parquet",
       "rows": {
-        "flows": 53371
+        "flows": 86079
       },
       "sweep_done": true
     },
     "2026-11-16": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-16.parquet",
       "rows": {
-        "flows": 44754
+        "flows": 78897
       },
       "sweep_done": true
     },
     "2026-11-17": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-17.parquet",
       "rows": {
-        "flows": 27475
+        "flows": 59398
       },
       "sweep_done": true
     },
     "2026-11-18": {
       "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-18.parquet",
       "rows": {
-        "flows": 15608
+        "flows": 46669
+      },
+      "sweep_done": true
+    },
+    "2026-11-19": {
+      "flows": "https://github.com/jjerry0519/broker-branch-tracker-data/releases/download/data-2026-11/2026-11-19.parquet",
+      "rows": {
+        "flows": 34345
       },
       "sweep_done": true
     }
   },
-  "updated": "2026-11-18T22:48:15.685763+00:00",
+  "updated": "2026-11-19T22:49:51.031480+00:00",
   "board_date": "2026-11-19"
 }
